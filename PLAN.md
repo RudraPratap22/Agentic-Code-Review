@@ -27,7 +27,7 @@ by both Bandit and Semgrep) as a confidence signal — never via the LLM.
 |---|---|---|
 | **Security** | custom AST + Bandit + Semgrep | — (security findings must be facts) |
 | **Quality** | custom AST + Ruff | naming / SRP, with evidence |
-| **Performance** | custom AST + Ruff `PERF` rules | — (optional later) |
+| **Performance** | custom AST + Ruff `PERF` rules | **scalability lens** — queue-offload, pagination, caching, N+1 depth, blocking-async; each **cites the code**. Explicitly excludes infra/capacity advice (load balancers, scaling strategy) |
 | **Documentation** | custom AST coverage (+ optional `pydocstyle`) | misleading comments, with evidence |
 | **Architecture & Structure** | file/layout checks (tests/, README, CI, .gitignore, secrets, packaging) **+ dependency-graph metrics** (circular deps, fan-in/out, complexity via `radon`, layering via `import-linter`) | design interpretation that **cites the measured metric** (e.g. "fan-in 14 → likely god-module") |
 
@@ -38,8 +38,15 @@ helps. Even architecture *opinions* are anchored to a deterministic measurement.
 ## Scope (locked)
 
 Backend + **all agents tiered** + **whole-repo structure review** + **grounded
-architecture/system-design review** + **GitHub PR review** + full testing + frontend UI.
-PR-review depth (post inline comments vs display-only) decided when we build it.
+architecture/system-design review** + **code-grounded scalability lens** + **GitHub PR
+review** + full testing + frontend UI. PR-review depth (post inline comments vs
+display-only) decided when we build it.
+
+**Explicit non-goal:** no infrastructure/capacity recommendations (load balancers,
+vertical-vs-horizontal scaling, message-broker choice). The source code does not contain
+the runtime/traffic/deployment context those require, so suggesting them would be
+ungrounded — the exact circularity trap this project avoids. We flag only scalability
+problems visible *in the code*, each citing the line.
 
 ## Deadlines
 
@@ -55,7 +62,7 @@ PR-review depth (post inline comments vs display-only) decided when we build it.
 |---|---|---|---|
 | 1 | Jun 20 | Supervisor: report split into Verified vs Suggested; LLM may not invent issues | All |
 | 2 | Jun 21 | Semgrep → 2nd verified security tool + corroboration | Security |
-| 3 | Jun 22 | Ruff → verified tier for Quality **and** Performance (`PERF` rules) | Quality + Performance |
+| 3 | Jun 22 | Ruff → verified tier for Quality **and** Performance (`PERF` rules); add code-grounded **scalability lens** (suggested, cites code; no infra advice) | Quality + Performance |
 | 4 | Jun 23 | **Architecture & Structure pt1** — file/layout checks + dependency-graph metrics (circular deps, fan-in/out, `radon`, `import-linter`) | Architecture |
 | 5 | Jun 24 | **Architecture & Structure pt2** — LLM design interpretation citing the measured metrics (suggested tier) | Architecture |
 | 6 | Jun 25 | Real input: walk local folders, multi-file review (LangGraph state design) | Pipeline-wide |
