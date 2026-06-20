@@ -109,6 +109,10 @@ CODE:
 
     issues = []
     for item in response.issues:
+        # Enforce grounding in CODE, not by trusting the prompt: an LLM finding with no
+        # cited evidence is dropped. This kills "no issue found"-style hallucinations.
+        if not (item.evidence and item.evidence.strip()):
+            continue
         try:
             sev = Severity(item.severity.lower())
         except ValueError:
