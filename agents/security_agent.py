@@ -14,6 +14,7 @@ import ast
 import re
 import sys
 import json
+import shutil
 import tempfile
 import subprocess
 import os
@@ -196,6 +197,75 @@ def _run_bandit(code: str) -> list[Issue]:
     return issues
 
 
+# ── Semgrep integration (third deterministic source) ─────────────────────────
+
+# Semgrep severity is ERROR/WARNING/INFO. Like Bandit we cap below CRITICAL and let
+# our own AST rules own the CRITICAL label.
+_SEMGREP_SEVERITY = {
+    "ERROR": Severity.HIGH,
+    "WARNING": Severity.MEDIUM,
+    "INFO": Severity.LOW,
+}
+
+
+def _semgrep_bin() -> str:
+    """Find the semgrep executable in this venv, falling back to PATH."""
+    candidate = os.path.join(os.path.dirname(sys.executable), "semgrep")
+    return candidate if os.path.exists(candidate) else (shutil.which("semgrep") or "semgrep")
+
+
+def _run_semgrep(code: str) -> list[Issue]:
+    """
+    Run Semgrep (--config auto) on `code` and return findings as Issues (tier='verified').
+
+    Same subprocess + tempfile pattern as Bandit. We use `p/default` (Semgrep's curated
+    ruleset) with `--metrics off` — it gives the same coverage as `--config auto` but
+    without telemetry (auto refuses to run with metrics off). Rules are fetched from
+    Semgrep's registry (network on first run, then cached); if Semgrep is missing or
+    offline we return [] and the other sources still run.
+    """
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(code)
+            tmp_path = tmp.name
+
+        proc = subprocess.run(
+            [_semgrep_bin(), "--config", "p/default", "--json", "--quiet",
+             "--metrics", "off", tmp_path],
+            capture_output=True, text=True, check=False,
+        )
+        data = json.loads(proc.stdout)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return []
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    issues: list[Issue] = []
+    for result in data.get("results", []):
+        extra = result.get("extra", {})
+        severity = _SEMGREP_SEVERITY.get(extra.get("severity"), Severity.LOW)
+        short_id = result.get("check_id", "semgrep-finding").split(".")[-1]
+        issues.append(Issue(
+            agent="security",
+            severity=severity,
+            category=short_id,
+            description=(extra.get("message") or "").strip(),
+            line_number=result.get("start", {}).get("line"),
+            suggestion="Review this Semgrep finding and apply the recommended secure pattern.",
+            tier="verified",
+            source="semgrep",
+            rule_id=short_id,
+        ))
+    return issues
+
+
 # ── Deterministic dedupe + corroboration ─────────────────────────────────────
 
 # Map Bandit rule IDs onto the SAME category names our AST visitor already uses,
@@ -214,16 +284,38 @@ _BANDIT_TO_CANONICAL = {
 }
 
 
+def _semgrep_canonical(rule_id: str) -> str | None:
+    """
+    Map a Semgrep rule name onto our canonical category by keyword. Order matters:
+    'sql' is checked before 'exec' so 'sqlalchemy-execute-raw-query' → sql-injection,
+    not arbitrary-code-execution. Returns None for rules with no canonical equivalent.
+    """
+    cid = (rule_id or "").lower()
+    if "sql" in cid:
+        return "sql-injection"
+    if "pickle" in cid:
+        return "unsafe-deserialization"
+    if "eval" in cid or "exec" in cid:
+        return "arbitrary-code-execution"
+    if any(k in cid for k in ("subprocess", "shell", "os-system", "command")):
+        return "command-injection"
+    if any(k in cid for k in ("secret", "password", "hardcoded", "token")):
+        return "hardcoded-secret"
+    return None
+
+
 def _canonical_key(issue: Issue) -> tuple:
     """
     Build a key that is the SAME for the same underlying bug across tools.
 
-    For Bandit issues we translate the rule_id to our canonical category; if a rule
-    has no mapping it's a Bandit-unique finding, so we key it by its rule_id (it will
-    never collide with an AST issue). AST issues already use canonical category names.
+    Bandit and Semgrep rule names are translated to the canonical category our AST
+    visitor already uses; a finding with no mapping is tool-unique, so we key it by its
+    rule_id (it never collides with an AST issue). AST issues already use canonical names.
     """
     if issue.source == "bandit":
         canonical = _BANDIT_TO_CANONICAL.get(issue.rule_id, f"bandit:{issue.rule_id}")
+    elif issue.source == "semgrep":
+        canonical = _semgrep_canonical(issue.rule_id) or f"semgrep:{issue.rule_id}"
     else:
         canonical = issue.category
     return (issue.line_number, canonical)
@@ -258,7 +350,8 @@ def _dedupe(issues: list[Issue]) -> list[Issue]:
         for other in group:
             if other is primary:
                 continue
-            if other.source not in primary.corroborated_by:
+            # Record corroboration only from a DIFFERENT tool (not the primary's own source).
+            if other.source != primary.source and other.source not in primary.corroborated_by:
                 primary.corroborated_by.append(other.source)
             # Preserve the corroborating tool's rule_id as citable evidence.
             if other.rule_id and not primary.rule_id:
@@ -281,8 +374,9 @@ def run_security_agent(state: ReviewState) -> dict:
     LangGraph node function. Takes the full state, returns only the fields
     it updates — LangGraph merges this dict back into the state.
 
-    Runs TWO deterministic sources (our AST visitor + Bandit), then deterministically
-    dedupes them: duplicates collapse into one issue marked as corroborated.
+    Runs THREE deterministic sources (our AST visitor + Bandit + Semgrep), then
+    deterministically dedupes them: duplicates collapse into one issue marked as
+    corroborated by the other tools.
     """
     try:
         tree = ast.parse(state.code)
@@ -299,14 +393,15 @@ def run_security_agent(state: ReviewState) -> dict:
     ast_issues = visitor.issues  # already tagged source='custom-ast' (model default)
 
     bandit_issues = _run_bandit(state.code)
+    semgrep_issues = _run_semgrep(state.code)
 
-    raw_count = len(ast_issues) + len(bandit_issues)
-    all_issues = _dedupe(ast_issues + bandit_issues)
+    raw_count = len(ast_issues) + len(bandit_issues) + len(semgrep_issues)
+    all_issues = _dedupe(ast_issues + bandit_issues + semgrep_issues)
     corroborated = sum(1 for i in all_issues if i.corroborated_by)
 
     summary = (
         f"Found {len(all_issues)} security issue(s) "
-        f"({raw_count} raw from custom AST + Bandit, {corroborated} corroborated by both)."
+        f"({raw_count} raw from AST + Bandit + Semgrep, {corroborated} corroborated across tools)."
         if all_issues
         else "No security issues detected."
     )
