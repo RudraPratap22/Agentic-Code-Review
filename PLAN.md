@@ -48,6 +48,19 @@ the runtime/traffic/deployment context those require, so suggesting them would b
 ungrounded — the exact circularity trap this project avoids. We flag only scalability
 problems visible *in the code*, each citing the line.
 
+## Development workflow (we dogfood our own advice)
+
+A code-review tool that preaches best practices must follow them. So from Day 3 on:
+
+- **No direct commits to `main`.** `main` is protected (PR required).
+- **One feature branch per logical change** (usually one Day), named with conventional
+  prefixes: `feat/`, `test/`, `docs/`, `chore/`. e.g. `feat/day3-ruff`.
+- **Every change goes through a pull request** — branch → push → PR → review → merge.
+- **Bonus / dogfooding:** once the PR-review feature (Days 8–9) works, the tool reviews
+  its own pull requests.
+
+(Days 1–2 landed directly on `main` as the project foundation; the workflow starts here.)
+
 ## Deadlines
 
 - Start: **Jun 20, 2026**
