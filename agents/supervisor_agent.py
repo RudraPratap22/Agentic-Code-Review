@@ -38,6 +38,7 @@ def _collect_issues(state: ReviewState) -> list[Issue]:
         state.quality_output,
         state.performance_output,
         state.documentation_output,
+        state.architecture_output,
     ]:
         if output and output.issues:
             issues.extend(output.issues)

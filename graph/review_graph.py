@@ -9,6 +9,7 @@ from agents.security_agent import run_security_agent
 from agents.quality_agent import run_quality_agent
 from agents.performance_agent import run_performance_agent
 from agents.documentation_agent import run_documentation_agent
+from agents.architecture_agent import run_architecture_agent
 from agents.supervisor_agent import run_supervisor_agent
 
 
@@ -20,6 +21,7 @@ def build_graph():
     graph.add_node("quality_agent", run_quality_agent)
     graph.add_node("performance_agent", run_performance_agent)
     graph.add_node("documentation_agent", run_documentation_agent)
+    graph.add_node("architecture_agent", run_architecture_agent)
     graph.add_node("supervisor_agent", run_supervisor_agent)
 
     # Fan-out: START → all 4 agents in parallel
@@ -27,12 +29,14 @@ def build_graph():
     graph.add_edge(START, "quality_agent")
     graph.add_edge(START, "performance_agent")
     graph.add_edge(START, "documentation_agent")
+    graph.add_edge(START, "architecture_agent")
 
-    # Fan-in: all 4 agents → supervisor
+    # Fan-in: all 5 agents → supervisor
     graph.add_edge("security_agent", "supervisor_agent")
     graph.add_edge("quality_agent", "supervisor_agent")
     graph.add_edge("performance_agent", "supervisor_agent")
     graph.add_edge("documentation_agent", "supervisor_agent")
+    graph.add_edge("architecture_agent", "supervisor_agent")
 
     # Supervisor → END
     graph.add_edge("supervisor_agent", END)
