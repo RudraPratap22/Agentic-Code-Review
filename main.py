@@ -55,7 +55,9 @@ def x(a, b, c, d, e, f, g):
 def main():
     print("\n⏳ Running full code review pipeline...\n")
 
-    initial_state = ReviewState(code=SAMPLE_CODE, filename="user_manager.py")
+    # Per-file agents review the SAMPLE_CODE snippet; the architecture agent reviews
+    # the whole repo at repo_path (here we dogfood our own project root).
+    initial_state = ReviewState(code=SAMPLE_CODE, filename="user_manager.py", repo_path=".")
     result = review_graph.invoke(initial_state)
 
     # Print individual agent summaries
@@ -68,6 +70,7 @@ def main():
         ("📐 Quality", "quality_output"),
         ("⚡ Performance", "performance_output"),
         ("📝 Documentation", "documentation_output"),
+        ("🏛️  Architecture", "architecture_output"),
     ]:
         output = result[key]
         print(f"\n{name}: {output.summary}")

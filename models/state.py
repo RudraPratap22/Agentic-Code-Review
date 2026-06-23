@@ -64,12 +64,18 @@ class ReviewState(BaseModel):
     # Input
     code: str = Field(description="The source code to review")
     filename: str = Field(default="untitled.py", description="Name of the file being reviewed")
+    repo_path: Optional[str] = Field(
+        default=None,
+        description="Path to the repo root, for whole-project (architecture) review. "
+                    "If None, the architecture agent skips.",
+    )
 
     # Agent outputs — each agent writes to its own field
     security_output: Optional[AgentOutput] = None
     quality_output: Optional[AgentOutput] = None
     performance_output: Optional[AgentOutput] = None
     documentation_output: Optional[AgentOutput] = None
+    architecture_output: Optional[AgentOutput] = None
 
     # Supervisor output
     final_report: Optional[str] = None
