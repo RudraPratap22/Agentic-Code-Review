@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
+from agents.external_tools import tool_bin, run_json_tool, dedupe
 
 load_dotenv()
 
@@ -131,6 +132,59 @@ CODE:
     return issues
 
 
+# ── Ruff checks (verified tier) ────────────────────────────────────────────────
+
+# Quality-relevant rule families (we exclude S=security, owned by the security agent,
+# and ANN=type-annotations which is too noisy for now).
+_RUFF_QUALITY_SELECT = "ARG,PLR,B,SIM,RET,PIE,C90"
+
+
+def _ruff_quality_severity(code_id: str) -> Severity:
+    """Ruff has no severities; assign one by rule family."""
+    if code_id.startswith(("PLR0913", "C901", "B")):
+        return Severity.MEDIUM
+    return Severity.LOW
+
+
+# Map Ruff rule ids onto the canonical category our AST checks already use, so an
+# overlap (e.g. Ruff PLR0913 vs our 'too-many-arguments') becomes corroboration.
+_RUFF_QUALITY_CANONICAL = {
+    "PLR0913": "too-many-arguments",
+}
+
+
+def _quality_canonical(issue: Issue):
+    """Key for dedupe: same underlying issue → same key across AST and Ruff."""
+    if issue.source == "ruff":
+        return (issue.line_number, _RUFF_QUALITY_CANONICAL.get(issue.rule_id, f"ruff:{issue.rule_id}"))
+    return (issue.line_number, issue.category)
+
+
+def _run_ruff_quality(code: str) -> list[Issue]:
+    data = run_json_tool(
+        [tool_bin("ruff"), "check", "--select", _RUFF_QUALITY_SELECT,
+         "--output-format", "json", "--no-cache"],
+        code,
+    )
+    if not data:
+        return []
+    issues = []
+    for r in data:
+        code_id = r.get("code") or "RUFF"
+        issues.append(Issue(
+            agent="quality",
+            severity=_ruff_quality_severity(code_id),
+            category=code_id,
+            description=(r.get("message") or "").strip(),
+            line_number=r.get("location", {}).get("row"),
+            suggestion="Apply Ruff's recommended fix for this lint rule.",
+            tier="verified",
+            source="ruff",
+            rule_id=code_id,
+        ))
+    return issues
+
+
 # ── LangGraph node ─────────────────────────────────────────────────────────────
 
 def run_quality_agent(state: ReviewState) -> dict:
@@ -146,11 +200,18 @@ def run_quality_agent(state: ReviewState) -> dict:
     visitor.visit(tree)
     ast_issues = visitor.issues
 
+    # Verified tier: AST + Ruff, deduped so overlaps become corroboration.
+    ruff_issues = _run_ruff_quality(state.code)
+    verified = dedupe(ast_issues + ruff_issues, _quality_canonical)
+
+    # Suggested tier: LLM (kept separate from the verified dedupe).
     llm_issues = _run_llm_checks(state.code)
 
-    all_issues = ast_issues + llm_issues
+    all_issues = verified + llm_issues
+    corroborated = sum(1 for i in verified if i.corroborated_by)
     summary = (
-        f"Found {len(all_issues)} quality issue(s) ({len(ast_issues)} structural, {len(llm_issues)} semantic)."
+        f"Found {len(all_issues)} quality issue(s) "
+        f"({len(verified)} verified [AST+Ruff], {len(llm_issues)} suggested [LLM], {corroborated} corroborated)."
         if all_issues else "No quality issues detected."
     )
 

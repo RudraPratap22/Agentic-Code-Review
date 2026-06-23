@@ -19,6 +19,7 @@ import tempfile
 import subprocess
 import os
 from models.state import ReviewState, AgentOutput, Issue, Severity
+from agents.external_tools import dedupe
 
 
 # Patterns that almost certainly indicate a hardcoded secret
@@ -321,54 +322,6 @@ def _canonical_key(issue: Issue) -> tuple:
     return (issue.line_number, canonical)
 
 
-def _dedupe(issues: list[Issue]) -> list[Issue]:
-    """
-    Collapse findings that multiple deterministic tools reported for the same bug.
-
-    For each group sharing a canonical key we keep ONE issue — the higher-severity
-    one (never downgrade a risk by merging) — and record the other tools in
-    `corroborated_by`, preserving their rule_ids as evidence. Fully deterministic.
-    """
-    groups: dict[tuple, list[Issue]] = {}
-    order: list[tuple] = []
-    for issue in issues:
-        key = _canonical_key(issue)
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(issue)
-
-    merged: list[Issue] = []
-    for key in order:
-        group = groups[key]
-        if len(group) == 1:
-            merged.append(group[0])
-            continue
-
-        # Keep the highest-severity issue as the representative.
-        primary = min(group, key=lambda i: _SEVERITY_RANK[i.severity])
-        for other in group:
-            if other is primary:
-                continue
-            # Record corroboration only from a DIFFERENT tool (not the primary's own source).
-            if other.source != primary.source and other.source not in primary.corroborated_by:
-                primary.corroborated_by.append(other.source)
-            # Preserve the corroborating tool's rule_id as citable evidence.
-            if other.rule_id and not primary.rule_id:
-                primary.rule_id = other.rule_id
-        merged.append(primary)
-    return merged
-
-
-# Lower number = more severe, used to pick the representative when merging.
-_SEVERITY_RANK = {
-    Severity.CRITICAL: 0,
-    Severity.HIGH: 1,
-    Severity.MEDIUM: 2,
-    Severity.LOW: 3,
-}
-
-
 def run_security_agent(state: ReviewState) -> dict:
     """
     LangGraph node function. Takes the full state, returns only the fields
@@ -396,7 +349,7 @@ def run_security_agent(state: ReviewState) -> dict:
     semgrep_issues = _run_semgrep(state.code)
 
     raw_count = len(ast_issues) + len(bandit_issues) + len(semgrep_issues)
-    all_issues = _dedupe(ast_issues + bandit_issues + semgrep_issues)
+    all_issues = dedupe(ast_issues + bandit_issues + semgrep_issues, _canonical_key)
     corroborated = sum(1 for i in all_issues if i.corroborated_by)
 
     summary = (
