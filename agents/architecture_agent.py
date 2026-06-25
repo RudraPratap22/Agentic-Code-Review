@@ -15,7 +15,12 @@ must cite the number it reacts to.)
 
 import os
 import ast
+from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
+
+load_dotenv()
 
 # Directories we never walk into.
 _SKIP_DIRS = {"venv", ".venv", "__pycache__", ".git", "node_modules", "build",
@@ -222,41 +227,107 @@ def _find_cycles(graph):
     return cycles
 
 
-def _dependency_checks(repo):
-    graph = _build_graph(repo)
-    issues = []
+def _graph_metrics(graph):
+    """Per-module fan-in/fan-out, computed once and reused by both tiers."""
+    fan_in = {m: 0 for m in graph}
+    for _src, targets in graph.items():
+        for t in targets:
+            if t in fan_in:
+                fan_in[t] += 1
+    modules_metrics = [
+        {"module": m, "fan_in": fan_in[m], "fan_out": len(graph[m])}
+        for m in sorted(graph)
+    ]
+    return modules_metrics, fan_in
 
-    # Circular dependencies.
-    for cycle in _find_cycles(graph):
+
+def _deterministic_dep_issues(modules_metrics, cycles):
+    """The VERIFIED dependency findings: circular imports and god-modules."""
+    issues = []
+    for cycle in cycles:
         issues.append(_arch_issue(
             Severity.HIGH, "circular-dependency",
             f"Circular import dependency among: {' → '.join(sorted(cycle))}",
             "Break the cycle by extracting shared code into a lower-level module.",
         ))
-
-    # Fan-in / fan-out → god-module detection.
-    fan_in = {m: 0 for m in graph}
-    for src, targets in graph.items():
-        for t in targets:
-            if t in fan_in:
-                fan_in[t] += 1
-    for mod in graph:
-        fo = len(graph[mod])
-        fi = fan_in.get(mod, 0)
-        if fi >= _FANIN_THRESHOLD and fo >= _FANOUT_THRESHOLD:
+    for m in modules_metrics:
+        if m["fan_in"] >= _FANIN_THRESHOLD and m["fan_out"] >= _FANOUT_THRESHOLD:
             issues.append(_arch_issue(
                 Severity.MEDIUM, "god-module",
-                f"Module '{mod}' is highly coupled (fan-in={fi}, fan-out={fo})",
+                f"Module '{m['module']}' is highly coupled "
+                f"(fan-in={m['fan_in']}, fan-out={m['fan_out']})",
                 "Split responsibilities — it is both widely depended on and depends on many modules.",
             ))
+    return issues
 
-    metrics = {
-        "modules": len(graph),
-        "edges": sum(len(t) for t in graph.values()),
-        "max_fan_in": max(fan_in.values()) if fan_in else 0,
-        "cycles": len(_find_cycles(graph)),
-    }
-    return issues, metrics
+
+# ── Suggested tier: LLM interprets the MEASURED metrics (never the source) ───────
+
+class LLMArchIssue(BaseModel):
+    category: str
+    severity: str = Field(description="one of: critical, high, medium, low")
+    description: str
+    suggestion: str
+    evidence: str = Field(
+        description="The EXACT measured metric you are reacting to, e.g. "
+                    "'fan_in=7 on models.state'. Required — no metric, no finding."
+    )
+
+
+class LLMArchResponse(BaseModel):
+    issues: list[LLMArchIssue] = Field(default_factory=list)
+
+
+def _metrics_digest(modules_metrics, cycles):
+    """Render the measured metrics as plain text — the ONLY thing the LLM sees."""
+    lines = ["MODULE COUPLING METRICS (module: fan_in, fan_out):"]
+    for m in modules_metrics:
+        lines.append(f"  {m['module']}: fan_in={m['fan_in']}, fan_out={m['fan_out']}")
+    cyc = [" → ".join(sorted(c)) for c in cycles] or ["none"]
+    lines.append("CIRCULAR DEPENDENCIES: " + "; ".join(cyc))
+    return "\n".join(lines)
+
+
+def _run_design_interpretation(modules_metrics, cycles):
+    """LLM design observations grounded ONLY in the measured metrics, each citing one."""
+    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
+    structured = llm.with_structured_output(LLMArchResponse)
+
+    prompt = f"""You are a software architecture reviewer. You are given ONLY measured
+dependency metrics for a codebase — you do NOT see the source code. Interpret them for
+DESIGN problems (poor separation of concerns, unstable/high coupling, layering smells).
+
+IMPORTANT NUANCE:
+- High fan_in with LOW fan_out is a NORMAL shared leaf module (e.g. a types/models file) —
+  do NOT flag it.
+- Circular dependencies and god-modules are already reported separately; add subtler
+  observations, or confirm one with extra insight only if clearly warranted.
+
+STRICT RULES:
+- Reason ONLY from the metrics below. Never invent a module or a number not listed.
+- Do NOT suggest infrastructure/scaling — this is about code structure only.
+- For EVERY issue, cite the exact metric in `evidence` (e.g. 'fan_in=7 on models.state').
+- If the metrics look healthy, return an empty list.
+
+METRICS:
+{_metrics_digest(modules_metrics, cycles)}
+"""
+    response: LLMArchResponse = structured.invoke(prompt)
+
+    issues = []
+    for item in response.issues:
+        if not (item.evidence and item.evidence.strip()):
+            continue
+        try:
+            sev = Severity(item.severity.lower())
+        except ValueError:
+            sev = Severity.LOW
+        issues.append(Issue(
+            agent="architecture", severity=sev, category=item.category,
+            description=item.description, suggestion=item.suggestion, line_number=None,
+            tier="suggested", source="llm", evidence=item.evidence,
+        ))
+    return issues
 
 
 # ── LangGraph node ──────────────────────────────────────────────────────────────
@@ -269,14 +340,20 @@ def run_architecture_agent(state: ReviewState) -> dict:
             summary="No repo path provided; architecture review skipped.",
         )}
 
+    # ── Verified tier (deterministic) ──
     structure = _structure_checks(repo)
-    deps, metrics = _dependency_checks(repo)
-    all_issues = structure + deps
+    graph = _build_graph(repo)
+    modules_metrics, _fan_in = _graph_metrics(graph)
+    cycles = _find_cycles(graph)
+    verified = structure + _deterministic_dep_issues(modules_metrics, cycles)
 
+    # ── Suggested tier (LLM interprets the measured metrics) ──
+    suggested = _run_design_interpretation(modules_metrics, cycles)
+
+    all_issues = verified + suggested
     summary = (
-        f"Reviewed repo structure + {metrics['modules']} modules "
-        f"({metrics['edges']} internal imports, {metrics['cycles']} cycle(s), "
-        f"max fan-in {metrics['max_fan_in']}). Found {len(all_issues)} architecture issue(s)."
+        f"Reviewed structure + {len(modules_metrics)} modules ({len(cycles)} cycle(s)). "
+        f"{len(verified)} verified, {len(suggested)} suggested architecture issue(s)."
     )
     return {"architecture_output": AgentOutput(
         agent_name="architecture", issues=all_issues, summary=summary,
