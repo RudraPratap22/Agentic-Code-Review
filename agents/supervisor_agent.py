@@ -48,10 +48,11 @@ def _collect_issues(state: ReviewState) -> list[Issue]:
 def _render_issue(issue: Issue) -> str:
     """Render a single issue as one markdown bullet, including its evidence trail."""
     line = f"L{issue.line_number}" if issue.line_number else "L?"
+    loc = f"{issue.filename}:{line}" if issue.filename else line
     rule = f" `{issue.rule_id}`" if issue.rule_id else ""
     corro = f" ✓ corroborated by {', '.join(issue.corroborated_by)}" if issue.corroborated_by else ""
     parts = [
-        f"- **[{issue.severity.value.upper()}]** {line} ({issue.agent}{rule}) — "
+        f"- **[{issue.severity.value.upper()}]** {loc} ({issue.agent}{rule}) — "
         f"{issue.category}: {issue.description}{corro}"
     ]
     if issue.evidence:
@@ -73,7 +74,8 @@ def _digest(issues: list[Issue]) -> str:
     lines = []
     for i in sorted(issues, key=lambda i: _SEVERITY_ORDER.get(i.severity, 99)):
         line = f"L{i.line_number}" if i.line_number else "L?"
-        lines.append(f"[{i.tier.upper()}][{i.severity.value.upper()}] {i.agent} {line}: "
+        loc = f"{i.filename}:{line}" if i.filename else line
+        lines.append(f"[{i.tier.upper()}][{i.severity.value.upper()}] {i.agent} {loc}: "
                      f"{i.category} — {i.description}")
     return "\n".join(lines)
 
@@ -109,19 +111,17 @@ Produce:
     return structured.invoke(prompt)
 
 
-def run_supervisor_agent(state: ReviewState) -> dict:
+def render_report(all_issues: list[Issue], title: str) -> str:
     """
-    LangGraph node. Runs AFTER all agents finish. Returns {"final_report": markdown}.
-    Facts are rendered by code; only the summary/priorities come from the LLM.
+    Build the final markdown report from a flat list of issues (from one file OR a whole
+    repo). Facts are rendered by code; only the summary/priorities come from the LLM.
     """
-    all_issues = _collect_issues(state)
     verified = [i for i in all_issues if i.tier == "verified"]
     suggested = [i for i in all_issues if i.tier == "suggested"]
 
     # Clean code → simple deterministic report, no LLM call needed.
     if not all_issues:
-        return {"final_report": f"# Code Review Report — {state.filename}\n\n"
-                                f"No issues detected by any agent. ✅"}
+        return f"# Code Review Report — {title}\n\nNo issues detected by any agent. ✅"
 
     # Severity counts for context.
     counts: dict[str, int] = {}
@@ -132,14 +132,14 @@ def run_supervisor_agent(state: ReviewState) -> dict:
 
     # LLM narrative — degrade gracefully if it fails.
     try:
-        narrative = _write_narrative(state.filename, _digest(all_issues), count_str)
+        narrative = _write_narrative(title, _digest(all_issues), count_str)
         exec_summary = narrative.executive_summary
         top_fixes = f"## Top Priority Fixes\n\n{narrative.top_priority_fixes}"
     except Exception as e:
         exec_summary = f"_(Executive summary unavailable — LLM error: {e})_"
         top_fixes = ""
 
-    report = f"""# Code Review Report — {state.filename}
+    return f"""# Code Review Report — {title}
 
 {exec_summary}
 
@@ -155,4 +155,7 @@ def run_supervisor_agent(state: ReviewState) -> dict:
 
 {top_fixes}"""
 
-    return {"final_report": report}
+
+def run_supervisor_agent(state: ReviewState) -> dict:
+    """Thin wrapper kept for single-file/graph use: collect from state, then render."""
+    return {"final_report": render_report(_collect_issues(state), state.filename)}

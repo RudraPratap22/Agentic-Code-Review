@@ -50,6 +50,32 @@ def run_json_tool(argv: list[str], code: str, suffix: str = ".py"):
                 pass
 
 
+# Directories we never walk into when reviewing a repo.
+SKIP_DIRS = {"venv", ".venv", "__pycache__", ".git", "node_modules", "build",
+             "dist", ".ruff_cache", ".semgrep_cache", ".mypy_cache", ".pytest_cache"}
+
+
+def walk_python_files(repo_path: str) -> list[tuple[str, str]]:
+    """Return [(relative_path, source_code)] for every .py file under repo_path.
+
+    Junk dirs (venv, .git, caches, ...) are pruned in place so os.walk never descends
+    into them. Files that can't be read are skipped rather than crashing the review.
+    """
+    files: list[tuple[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(repo_path):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        for f in filenames:
+            if f.endswith(".py"):
+                full = os.path.join(dirpath, f)
+                try:
+                    with open(full, encoding="utf-8", errors="ignore") as fh:
+                        code = fh.read()
+                except OSError:
+                    continue
+                files.append((os.path.relpath(full, repo_path), code))
+    return files
+
+
 # Lower number = more severe; used to pick the representative when merging duplicates.
 SEVERITY_RANK = {
     Severity.CRITICAL: 0,
