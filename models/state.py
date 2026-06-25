@@ -46,6 +46,10 @@ class Issue(BaseModel):
         default_factory=list,
         description="Other sources that independently flagged the same issue, e.g. ['bandit']",
     )
+    filename: Optional[str] = Field(
+        default=None,
+        description="Which file this issue is in (set during repo review).",
+    )
 
 
 class AgentOutput(BaseModel):

@@ -1,6 +1,11 @@
 """
-LangGraph graph definition.
-Architecture: START → [security, quality, performance, documentation] (parallel) → supervisor → END
+Per-file review graph.
+Architecture: START → [security, quality, performance, documentation] (parallel) → END
+
+This graph reviews ONE file. All four nodes share identical wiring (START → self → END),
+so we add them in a loop. The repo-level pieces — the architecture agent (whole repo)
+and the supervisor (aggregates across files) — live in pipeline.py, which maps this
+graph over every file and reduces the results into one report.
 """
 
 from langgraph.graph import StateGraph, START, END
@@ -9,39 +14,20 @@ from agents.security_agent import run_security_agent
 from agents.quality_agent import run_quality_agent
 from agents.performance_agent import run_performance_agent
 from agents.documentation_agent import run_documentation_agent
-from agents.architecture_agent import run_architecture_agent
-from agents.supervisor_agent import run_supervisor_agent
 
 
-def build_graph():
+def build_file_graph():
     graph = StateGraph(ReviewState)
-
-    # Add all 5 agent nodes
-    graph.add_node("security_agent", run_security_agent)
-    graph.add_node("quality_agent", run_quality_agent)
-    graph.add_node("performance_agent", run_performance_agent)
-    graph.add_node("documentation_agent", run_documentation_agent)
-    graph.add_node("architecture_agent", run_architecture_agent)
-    graph.add_node("supervisor_agent", run_supervisor_agent)
-
-    # Fan-out: START → all 4 agents in parallel
-    graph.add_edge(START, "security_agent")
-    graph.add_edge(START, "quality_agent")
-    graph.add_edge(START, "performance_agent")
-    graph.add_edge(START, "documentation_agent")
-    graph.add_edge(START, "architecture_agent")
-
-    # Fan-in: all 5 agents → supervisor
-    graph.add_edge("security_agent", "supervisor_agent")
-    graph.add_edge("quality_agent", "supervisor_agent")
-    graph.add_edge("performance_agent", "supervisor_agent")
-    graph.add_edge("documentation_agent", "supervisor_agent")
-    graph.add_edge("architecture_agent", "supervisor_agent")
-
-    # Supervisor → END
-    graph.add_edge("supervisor_agent", END)
-
+    for name, fn in [
+        ("security_agent", run_security_agent),
+        ("quality_agent", run_quality_agent),
+        ("performance_agent", run_performance_agent),
+        ("documentation_agent", run_documentation_agent),
+    ]:
+        graph.add_node(name, fn)
+        graph.add_edge(START, name)   # fan-out: all 4 start together
+        graph.add_edge(name, END)     # fan-in: graph ends when all 4 finish
     return graph.compile()
 
 
-review_graph = build_graph()
+file_review_graph = build_file_graph()
