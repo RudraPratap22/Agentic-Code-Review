@@ -8,6 +8,9 @@ This is the application-level MAP-REDUCE that wraps the per-file LangGraph graph
 """
 
 import os
+import shutil
+import tempfile
+import subprocess
 from models.state import ReviewState, Issue
 from agents.external_tools import walk_python_files
 from agents.architecture_agent import run_architecture_agent
@@ -18,7 +21,7 @@ from graph.review_graph import file_review_graph
 _FILE_KEYS = ["security_output", "quality_output", "performance_output", "documentation_output"]
 
 
-def review_repo(repo_path: str) -> str:
+def review_repo(repo_path: str, repo_name: str | None = None) -> str:
     repo_path = os.path.abspath(repo_path)
     all_issues: list[Issue] = []
 
@@ -39,5 +42,23 @@ def review_repo(repo_path: str) -> str:
         all_issues.extend(arch.issues)
 
     # ── REDUCE: one report over everything ──
-    title = f"{os.path.basename(repo_path)} ({len(files)} files)"
+    name = repo_name or os.path.basename(repo_path)
+    title = f"{name} ({len(files)} files)"
     return render_report(all_issues, title)
+
+
+def review_github(url: str) -> str:
+    """Clone a public git repo to a temp dir, review it, then always clean up."""
+    tmpdir = tempfile.mkdtemp(prefix="acr_clone_")
+    try:
+        proc = subprocess.run(
+            ["git", "clone", "--depth", "1", url, tmpdir],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"git clone failed: {proc.stderr.strip()}")
+
+        repo_name = url.rstrip("/").split("/")[-1].removesuffix(".git")
+        return review_repo(tmpdir, repo_name=repo_name)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
