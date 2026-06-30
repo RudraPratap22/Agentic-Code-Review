@@ -10,11 +10,11 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
-from agents.external_tools import tool_bin, run_json_tool, dedupe
+from agents.external_tools import tool_bin, run_json_tool, dedupe, llm_invoke, drop_duplicate_suggestions
 
 load_dotenv()
 
-MAX_FUNCTION_LINES = 20
+MAX_FUNCTION_LINES = 50
 MAX_FUNCTION_ARGS = 5
 
 
@@ -97,6 +97,9 @@ def _run_llm_checks(code: str) -> list[Issue]:
 
 Do NOT flag missing docstrings or function length — those are handled separately.
 Do NOT flag security, performance, or any other category — only naming and SRP.
+Do NOT flag idiomatic short loop/comprehension variables (a, i, x, f, _, e, ...) —
+only flag genuinely unclear names in meaningful scopes (function params, module-level
+names, attributes).
 For EVERY issue you MUST quote the exact offending line verbatim in the `evidence` field.
 If you cannot point to a specific line of code, DO NOT report the issue.
 Return only real issues, not nitpicks. If the code is clean, return an empty list.
@@ -106,7 +109,9 @@ CODE:
 {code}
 ```"""
 
-    response: LLMQualityResponse = structured_llm.invoke(prompt)
+    response = llm_invoke(structured_llm, prompt)
+    if response is None:
+        return []                      # LLM unavailable → degrade (no suggested findings)
 
     issues = []
     for item in response.issues:
@@ -129,7 +134,7 @@ CODE:
             source="llm",
             evidence=item.evidence,
         ))
-    return issues
+    return drop_duplicate_suggestions(issues)
 
 
 # ── Ruff checks (verified tier) ────────────────────────────────────────────────

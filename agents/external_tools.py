@@ -9,11 +9,38 @@ way — the tool itself practices the DRY principle it reviews for.
 import os
 import sys
 import json
+import time
 import shutil
 import tempfile
 import subprocess
 from typing import Callable, Hashable
 from models.state import Issue, Severity
+
+
+def llm_invoke(structured_llm, prompt, retries: int = 3, base_delay: float = 2.0):
+    """Invoke an LLM with retry + exponential backoff on transient errors.
+
+    Returns the response, or None if all attempts fail — so callers can degrade
+    gracefully (drop the suggested tier for this file) instead of crashing the review.
+    """
+    for attempt in range(retries):
+        try:
+            return structured_llm.invoke(prompt)
+        except Exception:
+            if attempt < retries - 1:
+                time.sleep(base_delay * (2 ** attempt))   # wait 2s, then 4s, then give up
+    return None
+
+
+def drop_duplicate_suggestions(issues: list[Issue]) -> list[Issue]:
+    """Remove exact-duplicate LLM findings (same line, category, description)."""
+    seen, out = set(), []
+    for i in issues:
+        key = (i.line_number, i.category, i.description)
+        if key not in seen:
+            seen.add(key)
+            out.append(i)
+    return out
 
 
 def tool_bin(name: str) -> str:

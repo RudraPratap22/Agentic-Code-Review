@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
-from agents.external_tools import tool_bin, run_json_tool, dedupe
+from agents.external_tools import tool_bin, run_json_tool, dedupe, llm_invoke, drop_duplicate_suggestions
 
 load_dotenv()
 
@@ -213,7 +213,9 @@ CODE:
 {code}
 ```"""
 
-    response: LLMScalabilityResponse = structured.invoke(prompt)
+    response = llm_invoke(structured, prompt)
+    if response is None:
+        return []                      # LLM unavailable → degrade gracefully
 
     issues = []
     for item in response.issues:
@@ -234,7 +236,7 @@ CODE:
             source="llm",
             evidence=item.evidence,
         ))
-    return issues
+    return drop_duplicate_suggestions(issues)
 
 
 def run_performance_agent(state: ReviewState) -> dict:

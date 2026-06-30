@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
+from agents.external_tools import llm_invoke, drop_duplicate_suggestions
 
 load_dotenv()
 
@@ -312,7 +313,9 @@ STRICT RULES:
 METRICS:
 {_metrics_digest(modules_metrics, cycles)}
 """
-    response: LLMArchResponse = structured.invoke(prompt)
+    response = llm_invoke(structured, prompt)
+    if response is None:
+        return []                      # LLM unavailable → degrade gracefully
 
     issues = []
     for item in response.issues:
@@ -327,7 +330,7 @@ METRICS:
             description=item.description, suggestion=item.suggestion, line_number=None,
             tier="suggested", source="llm", evidence=item.evidence,
         ))
-    return issues
+    return drop_duplicate_suggestions(issues)
 
 
 # ── LangGraph node ──────────────────────────────────────────────────────────────
