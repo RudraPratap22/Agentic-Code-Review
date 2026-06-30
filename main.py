@@ -5,11 +5,12 @@ Usage:
     python main.py <path>                 # review a local folder (defaults to ".")
     python main.py <github-repo-url>      # clone, review, clean up
     python main.py <github-pr-url>        # review only the lines changed in a PR
+    python main.py <github-pr-url> --post # ...and post the findings as inline PR comments
 """
 
 import sys
 from pipeline import review_repo, review_github
-from github_pr import review_pr
+from github_pr import review_pr, post_pr_review
 
 
 def _is_url(arg: str) -> bool:
@@ -17,15 +18,20 @@ def _is_url(arg: str) -> bool:
 
 
 def main():
-    target = sys.argv[1] if len(sys.argv) > 1 else "."
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    target = args[0] if args else "."
     print(f"\n⏳ Reviewing: {target}\n")
+
     if _is_url(target) and "/pull/" in target:
-        report = review_pr(target)          # a pull request → review only changed lines
+        if "--post" in flags:
+            print(post_pr_review(target))   # write inline comments to the PR
+        else:
+            print(review_pr(target))        # just print the report (read-only)
     elif _is_url(target):
-        report = review_github(target)      # a repo URL → clone + review
+        print(review_github(target))        # a repo URL → clone + review
     else:
-        report = review_repo(target)        # a local folder
-    print(report)
+        print(review_repo(target))          # a local folder
 
 
 if __name__ == "__main__":

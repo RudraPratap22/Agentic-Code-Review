@@ -59,7 +59,9 @@ def _added_lines(patch: str) -> set[int]:
     return added
 
 
-def review_pr(pr_url: str) -> str:
+def _collect_pr_findings(pr_url: str):
+    """Fetch the PR, review changed files, scope findings to changed lines.
+    Returns (owner, repo, number, list[Issue]) — the shared producer."""
     owner, repo, number = _parse_pr_url(pr_url)
     resp = requests.get(
         f"{_API}/repos/{owner}/{repo}/pulls/{number}/files?per_page=100",
@@ -87,4 +89,43 @@ def review_pr(pr_url: str) -> str:
                         issue.filename = name
                         all_issues.append(issue)
 
-    return render_report(all_issues, f"PR #{number} — {owner}/{repo}")
+    return owner, repo, number, all_issues
+
+
+def review_pr(pr_url: str) -> str:
+    """Consumer 1: render the scoped findings as a markdown report (read-only)."""
+    owner, repo, number, issues = _collect_pr_findings(pr_url)
+    return render_report(issues, f"PR #{number} — {owner}/{repo}")
+
+
+def _issue_to_comment(issue) -> dict:
+    """One Issue → a GitHub inline review-comment payload (path + line + side + body)."""
+    tier = "✅ Verified" if issue.tier == "verified" else "🤖 Suggested (lower confidence)"
+    rule = f" `{issue.rule_id}`" if issue.rule_id else ""
+    body = (f"**[{issue.severity.value.upper()}] {issue.category}**{rule} — {tier}\n\n"
+            f"{issue.description}\n\n**Suggested fix:** {issue.suggestion}")
+    return {"path": issue.filename, "line": issue.line_number, "side": "RIGHT", "body": body}
+
+
+def post_pr_review(pr_url: str) -> str:
+    """Consumer 2: post the scoped findings as ONE batched inline review on the PR."""
+    if not os.getenv("GITHUB_TOKEN"):
+        raise RuntimeError("Posting requires GITHUB_TOKEN (pull-request write scope) in .env")
+
+    owner, repo, number, issues = _collect_pr_findings(pr_url)
+    if not issues:
+        return f"No issues on changed lines for PR #{number} — nothing to post."
+
+    comments = [_issue_to_comment(i) for i in issues]
+    verified = sum(1 for i in issues if i.tier == "verified")
+    body = (f"🤖 Automated review — {len(issues)} finding(s) on changed lines "
+            f"({verified} verified, {len(issues) - verified} suggested). "
+            f"Verified = deterministic tools; suggested = LLM hints.")
+
+    resp = requests.post(
+        f"{_API}/repos/{owner}/{repo}/pulls/{number}/reviews",
+        headers=_headers(), timeout=30,
+        json={"event": "COMMENT", "body": body, "comments": comments},
+    )
+    resp.raise_for_status()
+    return f"Posted a review with {len(comments)} inline comment(s) to PR #{number}."
