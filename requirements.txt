@@ -6,3 +6,4 @@ bandit>=1.7.0
 semgrep>=1.100.0
 ruff>=0.6.0
 requests>=2.31.0
+pytest>=8.0.0
