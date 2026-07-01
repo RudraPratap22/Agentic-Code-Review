@@ -21,7 +21,12 @@ from graph.review_graph import file_review_graph
 _FILE_KEYS = ["security_output", "quality_output", "performance_output", "documentation_output"]
 
 
-def review_repo(repo_path: str, repo_name: str | None = None) -> str:
+def collect_repo_findings(repo_path: str, repo_name: str | None = None):
+    """Producer: review a folder and return (title, list[Issue]) — the raw findings.
+
+    The map-reduce lives here; consumers (render_report / the API / posting) build on
+    top of the same collection so there's one source of truth for the findings.
+    """
     repo_path = os.path.abspath(repo_path)
     all_issues: list[Issue] = []
 
@@ -41,14 +46,18 @@ def review_repo(repo_path: str, repo_name: str | None = None) -> str:
     if arch:
         all_issues.extend(arch.issues)
 
-    # ── REDUCE: one report over everything ──
     name = repo_name or os.path.basename(repo_path)
-    title = f"{name} ({len(files)} files)"
-    return render_report(all_issues, title)
+    return f"{name} ({len(files)} files)", all_issues
 
 
-def review_github(url: str) -> str:
-    """Clone a public git repo to a temp dir, review it, then always clean up."""
+def review_repo(repo_path: str, repo_name: str | None = None) -> str:
+    """Consumer: render the findings as one markdown report (CLI path)."""
+    title, issues = collect_repo_findings(repo_path, repo_name)
+    return render_report(issues, title)
+
+
+def collect_github_findings(url: str):
+    """Producer for a repo URL: clone → collect → (title, list[Issue]); always cleans up."""
     tmpdir = tempfile.mkdtemp(prefix="acr_clone_")
     try:
         proc = subprocess.run(
@@ -59,6 +68,12 @@ def review_github(url: str) -> str:
             raise RuntimeError(f"git clone failed: {proc.stderr.strip()}")
 
         repo_name = url.rstrip("/").split("/")[-1].removesuffix(".git")
-        return review_repo(tmpdir, repo_name=repo_name)
+        return collect_repo_findings(tmpdir, repo_name=repo_name)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def review_github(url: str) -> str:
+    """Consumer: clone + render the findings as markdown (CLI path)."""
+    title, issues = collect_github_findings(url)
+    return render_report(issues, title)
