@@ -141,6 +141,12 @@ header h1 {
 .badge.sev-low { background: #33384a; color: #cbd2e0; }
 .badge.tier-verified { color: #4ade80; }
 .badge.tier-suggested { color: #c084fc; }
+.badge.agent { background: #1e2740; color: #93c5fd; text-transform: none; }
+.badge.agent-security { background: #3b1e2b; color: #fca5b4; }
+.badge.agent-architecture { background: #2a2340; color: #c4b5fd; }
+.badge.agent-performance { background: #2a2410; color: #fcd34d; }
+.badge.agent-quality { background: #16283a; color: #7dd3fc; }
+.badge.agent-documentation { background: #1e2b22; color: #86efac; }
 .loc {
   font-family: ui-monospace, Consolas, monospace;
   color: #9aa0ac;
