@@ -43,6 +43,15 @@ def drop_duplicate_suggestions(issues: list[Issue]) -> list[Issue]:
     return out
 
 
+def ruff_suggestion(result: dict) -> str:
+    """Actionable fix text from a Ruff result: the autofix message, else the rule-doc link."""
+    fix = result.get("fix")
+    if fix and fix.get("message"):
+        return fix["message"]                 # e.g. "Remove unused import: os"
+    url = result.get("url")
+    return f"See the rule: {url}" if url else "Review this Ruff finding."
+
+
 def tool_bin(name: str) -> str:
     """Locate a CLI tool inside this venv, falling back to PATH."""
     candidate = os.path.join(os.path.dirname(sys.executable), name)
