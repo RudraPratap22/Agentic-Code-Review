@@ -3,6 +3,13 @@ import "./App.css";
 
 const API_BASE = "http://localhost:8000";
 const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+const AGENT_META = {
+  security: "🔒 security",
+  quality: "📐 quality",
+  performance: "⚡ performance",
+  documentation: "📝 documentation",
+  architecture: "🏛️ architecture",
+};
 
 export default function App() {
   const [target, setTarget] = useState("");
@@ -11,6 +18,7 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [tierFilter, setTierFilter] = useState("all");
   const [sevFilter, setSevFilter] = useState("all");
+  const [agentFilter, setAgentFilter] = useState("all");
 
   async function runReview(e) {
     e.preventDefault();
@@ -35,9 +43,12 @@ export default function App() {
     }
   }
 
+  const agentsPresent = [...new Set((result?.findings || []).map((f) => f.agent))].sort();
+
   const findings = (result?.findings || [])
     .filter((f) => tierFilter === "all" || f.tier === tierFilter)
     .filter((f) => sevFilter === "all" || f.severity === sevFilter)
+    .filter((f) => agentFilter === "all" || f.agent === agentFilter)
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 
   return (
@@ -96,6 +107,17 @@ export default function App() {
                 <option value="low">Low</option>
               </select>
             </label>
+            <label>
+              Agent{" "}
+              <select value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
+                <option value="all">All</option>
+                {agentsPresent.map((a) => (
+                  <option key={a} value={a}>
+                    {a}
+                  </option>
+                ))}
+              </select>
+            </label>
             <span className="muted">{findings.length} shown</span>
           </div>
 
@@ -104,6 +126,9 @@ export default function App() {
               <li key={i} className={`finding sev-border-${f.severity}`}>
                 <div className="finding-head">
                   <span className={`badge sev-${f.severity}`}>{f.severity.toUpperCase()}</span>
+                  <span className={`badge agent agent-${f.agent}`}>
+                    {AGENT_META[f.agent] || f.agent}
+                  </span>
                   <span className={`badge tier-${f.tier}`}>
                     {f.tier === "verified" ? "✅ Verified" : "🤖 Suggested"}
                   </span>
