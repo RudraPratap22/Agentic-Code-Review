@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
-from agents.external_tools import tool_bin, run_json_tool, dedupe, llm_invoke, drop_duplicate_suggestions
+from agents.external_tools import (tool_bin, run_json_tool, dedupe, llm_invoke,
+                                    drop_duplicate_suggestions, ruff_suggestion)
 
 load_dotenv()
 
@@ -182,7 +183,7 @@ def _run_ruff_quality(code: str) -> list[Issue]:
             category=code_id,
             description=(r.get("message") or "").strip(),
             line_number=r.get("location", {}).get("row"),
-            suggestion="Apply Ruff's recommended fix for this lint rule.",
+            suggestion=ruff_suggestion(r),
             tier="verified",
             source="ruff",
             rule_id=code_id,
