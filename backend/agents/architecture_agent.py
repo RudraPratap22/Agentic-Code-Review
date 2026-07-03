@@ -135,7 +135,15 @@ def _collect_modules(repo):
 
 
 def _resolve_relative(current, level, module):
-    """Resolve a relative import (level>0) to an absolute dotted module name."""
+    """Resolve an import to an absolute dotted module name.
+
+    level == 0 is an ABSOLUTE import (`from app.utils.config import X`) — return it as-is.
+    level >= 1 is a relative import (`from .config import X`) — resolve against the
+    current module's package. (Previously level 0 was mangled into
+    `<current-pkg>.<module>`, which broke the whole dependency graph for absolute imports.)
+    """
+    if level == 0:
+        return module
     pkg = current.split(".")[:-1]                 # current module's package
     if level > 1:
         pkg = pkg[:-(level - 1)] if (level - 1) <= len(pkg) else []
