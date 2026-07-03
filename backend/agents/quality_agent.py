@@ -144,6 +144,16 @@ CODE:
 # and ANN=type-annotations which is too noisy for now).
 _RUFF_QUALITY_SELECT = "ARG,PLR,B,SIM,RET,PIE,C90"
 
+# FastAPI (and similar) use `= Depends(...)` / `= File(...)` etc. as argument defaults —
+# that's idiomatic, so whitelist those calls for Ruff's B008 (function-call-in-default).
+# B008 still fires on genuinely-bad defaults like `def f(x=list())`.
+_IMMUTABLE_CALLS = [
+    "fastapi.File", "fastapi.Form", "fastapi.Body", "fastapi.Depends",
+    "fastapi.Query", "fastapi.Path", "fastapi.Header", "fastapi.Cookie", "fastapi.Security",
+]
+_RUFF_CONFIG = ("lint.flake8-bugbear.extend-immutable-calls=["
+                + ", ".join(f'"{c}"' for c in _IMMUTABLE_CALLS) + "]")
+
 
 def _ruff_quality_severity(code_id: str) -> Severity:
     """Ruff has no severities; assign one by rule family."""
@@ -169,7 +179,7 @@ def _quality_canonical(issue: Issue):
 def _run_ruff_quality(code: str) -> list[Issue]:
     data = run_json_tool(
         [tool_bin("ruff"), "check", "--select", _RUFF_QUALITY_SELECT,
-         "--output-format", "json", "--no-cache"],
+         "--config", _RUFF_CONFIG, "--output-format", "json", "--no-cache"],
         code,
     )
     if not data:
