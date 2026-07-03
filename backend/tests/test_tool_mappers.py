@@ -23,3 +23,14 @@ def test_ruff_mapping(monkeypatch):
 def test_ruff_degrades_when_tool_missing(monkeypatch):
     monkeypatch.setattr("agents.quality_agent.run_json_tool", lambda *a, **k: None)
     assert _run_ruff_quality("x = 1") == []     # no tool / bad output → no crash, just []
+
+
+# ── Real-Ruff integration checks for the FastAPI false-positive fix ──
+
+def test_ruff_allows_fastapi_default_calls():
+    code = "from fastapi import File, UploadFile\ndef f(x: UploadFile = File(...)):\n    return x\n"
+    assert "B008" not in [i.rule_id for i in _run_ruff_quality(code)]   # idiomatic → not flagged
+
+
+def test_ruff_still_flags_real_mutable_default():
+    assert "B006" in [i.rule_id for i in _run_ruff_quality("def g(y=[]):\n    return y\n")]
