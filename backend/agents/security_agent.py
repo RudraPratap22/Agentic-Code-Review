@@ -141,48 +141,54 @@ _BANDIT_SEVERITY = {
 }
 
 
-def _run_bandit(code: str) -> list[Issue]:
+def _run_bandit(code: str, precomputed: list | None = None) -> list[Issue]:
     """
-    Run Bandit on `code` and return its findings as Issue objects (tier='verified').
+    Return Bandit findings as Issue objects (tier='verified').
 
-    How it works: Bandit scans files on disk, but our code is a string. So we write
-    the string to a temporary .py file, run `python -m bandit -f json` on it as a
-    subprocess, parse the JSON, and map each result into our Issue model.
+    Two ways to get the raw results:
+      • precomputed is not None → use it (the repo-level batched run already ran
+        Bandit once over the whole repo and handed us this file's slice).
+      • precomputed is None → fall back to spawning Bandit on this one string. Bandit
+        scans files on disk, so we write the string to a temp .py file, run
+        `python -m bandit -f json` on it, and parse the JSON. Used by the unit tests
+        and any lone-string review, where no batch ran.
 
     If Bandit is missing or anything goes wrong, we return [] — the agent's own AST
     checks still run. An optional tool must never crash the pipeline.
     """
-    tmp_path = None
-    try:
-        # Write the code to a temp file Bandit can scan.
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8"
-        ) as tmp:
-            tmp.write(code)
-            tmp_path = tmp.name
+    if precomputed is not None:
+        results = precomputed
+    else:
+        tmp_path = None
+        try:
+            # Write the code to a temp file Bandit can scan.
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(code)
+                tmp_path = tmp.name
 
-        # Run Bandit. -f json = machine-readable output, -q = quiet (no banner).
-        # check=False because Bandit exits non-zero whenever it finds issues.
-        proc = subprocess.run(
-            [sys.executable, "-m", "bandit", "-f", "json", "-q", tmp_path],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        data = json.loads(proc.stdout)
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
-        # Bandit not installed, or produced no/invalid JSON — degrade gracefully.
-        return []
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            # Run Bandit. -f json = machine-readable output, -q = quiet (no banner).
+            # check=False because Bandit exits non-zero whenever it finds issues.
+            proc = subprocess.run(
+                [sys.executable, "-m", "bandit", "-f", "json", "-q", tmp_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            results = json.loads(proc.stdout).get("results", [])
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            # Bandit not installed, or produced no/invalid JSON — degrade gracefully.
+            return []
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     issues: list[Issue] = []
-    for result in data.get("results", []):
+    for result in results:
         severity = _BANDIT_SEVERITY.get(result.get("issue_severity"), Severity.LOW)
         issues.append(Issue(
             agent="security",
@@ -215,41 +221,45 @@ def _semgrep_bin() -> str:
     return candidate if os.path.exists(candidate) else (shutil.which("semgrep") or "semgrep")
 
 
-def _run_semgrep(code: str) -> list[Issue]:
+def _run_semgrep(code: str, precomputed: list | None = None) -> list[Issue]:
     """
-    Run Semgrep (--config auto) on `code` and return findings as Issues (tier='verified').
+    Return Semgrep findings as Issues (tier='verified').
 
-    Same subprocess + tempfile pattern as Bandit. We use `p/default` (Semgrep's curated
-    ruleset) with `--metrics off` — it gives the same coverage as `--config auto` but
-    without telemetry (auto refuses to run with metrics off). Rules are fetched from
+    Like _run_bandit: precomputed (from the repo-level batched run) is used when given;
+    otherwise we fall back to spawning Semgrep on this one string. We use `p/default`
+    (Semgrep's curated ruleset) with `--metrics off` — same coverage as `--config auto`
+    but without telemetry (auto refuses to run with metrics off). Rules are fetched from
     Semgrep's registry (network on first run, then cached); if Semgrep is missing or
     offline we return [] and the other sources still run.
     """
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8"
-        ) as tmp:
-            tmp.write(code)
-            tmp_path = tmp.name
+    if precomputed is not None:
+        results = precomputed
+    else:
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(code)
+                tmp_path = tmp.name
 
-        proc = subprocess.run(
-            [_semgrep_bin(), "--config", "p/default", "--json", "--quiet",
-             "--metrics", "off", tmp_path],
-            capture_output=True, text=True, check=False,
-        )
-        data = json.loads(proc.stdout)
-    except (FileNotFoundError, json.JSONDecodeError, ValueError):
-        return []
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            proc = subprocess.run(
+                [_semgrep_bin(), "--config", "p/default", "--json", "--quiet",
+                 "--metrics", "off", tmp_path],
+                capture_output=True, text=True, check=False,
+            )
+            results = json.loads(proc.stdout).get("results", [])
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            return []
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     issues: list[Issue] = []
-    for result in data.get("results", []):
+    for result in results:
         extra = result.get("extra", {})
         severity = _SEMGREP_SEVERITY.get(extra.get("severity"), Severity.LOW)
         short_id = result.get("check_id", "semgrep-finding").split(".")[-1]
@@ -345,8 +355,11 @@ def run_security_agent(state: ReviewState) -> dict:
     visitor.visit(tree)
     ast_issues = visitor.issues  # already tagged source='custom-ast' (model default)
 
-    bandit_issues = _run_bandit(state.code)
-    semgrep_issues = _run_semgrep(state.code)
+    # Use pre-computed findings from the repo-level batched run when present; a missing
+    # key returns None → the runner falls back to spawning on this one string (tests).
+    tf = state.tool_findings or {}
+    bandit_issues = _run_bandit(state.code, tf.get("bandit"))
+    semgrep_issues = _run_semgrep(state.code, tf.get("semgrep"))
 
     raw_count = len(ast_issues) + len(bandit_issues) + len(semgrep_issues)
     all_issues = dedupe(ast_issues + bandit_issues + semgrep_issues, _canonical_key)

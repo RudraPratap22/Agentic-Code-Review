@@ -73,6 +73,13 @@ class ReviewState(BaseModel):
         description="Path to the repo root, for whole-project (architecture) review. "
                     "If None, the architecture agent skips.",
     )
+    tool_findings: Optional[dict] = Field(
+        default=None,
+        description="Pre-computed tool findings for THIS file from the repo-level batched "
+                    "run, e.g. {'bandit': [...], 'semgrep': [...], 'ruff': [...]}. "
+                    "None means no batch ran (tests / lone string) → agents spawn the tool "
+                    "themselves. An empty list means the batch ran but found nothing here.",
+    )
 
     # Agent outputs — each agent writes to its own field
     security_output: Optional[AgentOutput] = None

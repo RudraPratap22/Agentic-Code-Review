@@ -86,6 +86,73 @@ def run_json_tool(argv: list[str], code: str, suffix: str = ".py"):
                 pass
 
 
+# ── Batched, repo-level tool runners ──────────────────────────────────────────
+# Run a tool ONCE over the whole repo instead of once per file. Each tool boots and
+# loads its ruleset a single time (Semgrep's startup is seconds), so a 50-file repo
+# goes from ~150 subprocess boots (3 tools × 50 files) down to 3. The findings are
+# identical — we just group them by file so each file can grab its own slice.
+
+
+def _run_tool_over_dir(argv: list[str], repo_path: str):
+    """Run `argv + [repo_path]` and return the parsed JSON, or None on failure.
+
+    Same graceful-degradation contract as run_json_tool: a missing tool or invalid
+    JSON returns None, and the caller falls back to per-file spawning.
+    """
+    try:
+        proc = subprocess.run(argv + [repo_path], capture_output=True, text=True, check=False)
+        return json.loads(proc.stdout)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _group_by_file(results, repo_path: str, path_key: str) -> dict:
+    """Bucket a flat list of tool results into {rel_path: [result, ...]}.
+
+    Each tool tags a result with the file it came from under a different key
+    (Bandit/Ruff: 'filename', Semgrep: 'path') and reports an absolute path; we
+    convert it to a repo-relative path so it matches the keys used in the pipeline.
+    """
+    out: dict[str, list] = {}
+    for r in results or []:
+        raw = r.get(path_key)
+        if not raw:
+            continue
+        rel = os.path.relpath(raw, repo_path)
+        out.setdefault(rel, []).append(r)
+    return out
+
+
+def run_bandit_repo(repo_path: str) -> dict:
+    """Batched Bandit over the whole repo → {rel_path: [raw result dicts]}."""
+    data = _run_tool_over_dir(
+        [sys.executable, "-m", "bandit", "-r", "-f", "json", "-q"], repo_path)
+    return _group_by_file((data or {}).get("results", []), repo_path, "filename")
+
+
+def run_semgrep_repo(repo_path: str) -> dict:
+    """Batched Semgrep (p/default) over the whole repo → {rel_path: [raw result dicts]}."""
+    data = _run_tool_over_dir(
+        [tool_bin("semgrep"), "--config", "p/default", "--json", "--quiet",
+         "--metrics", "off"], repo_path)
+    return _group_by_file((data or {}).get("results", []), repo_path, "path")
+
+
+def run_ruff_repo(repo_path: str, select: str, config: str | None = None) -> dict:
+    """Batched Ruff over the whole repo → {rel_path: [raw result dicts]}.
+
+    Ruff emits a top-level JSON list (not wrapped in a key). `select` (and optional
+    `config`) are passed in so this stays identical to the per-file quality-agent
+    invocation.
+    """
+    argv = [tool_bin("ruff"), "check", "--select", select]
+    if config:
+        argv += ["--config", config]
+    argv += ["--output-format", "json", "--no-cache"]
+    data = _run_tool_over_dir(argv, repo_path)
+    return _group_by_file(data or [], repo_path, "filename")
+
+
 # Directories we never walk into when reviewing a repo.
 SKIP_DIRS = {"venv", ".venv", "__pycache__", ".git", "node_modules", "build",
              "dist", ".ruff_cache", ".semgrep_cache", ".mypy_cache", ".pytest_cache"}
