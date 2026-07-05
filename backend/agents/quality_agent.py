@@ -176,12 +176,17 @@ def _quality_canonical(issue: Issue):
     return (issue.line_number, issue.category)
 
 
-def _run_ruff_quality(code: str) -> list[Issue]:
-    data = run_json_tool(
-        [tool_bin("ruff"), "check", "--select", _RUFF_QUALITY_SELECT,
-         "--config", _RUFF_CONFIG, "--output-format", "json", "--no-cache"],
-        code,
-    )
+def _run_ruff_quality(code: str, precomputed: list | None = None) -> list[Issue]:
+    # precomputed (this file's slice from the repo-level batched Ruff run) is used when
+    # given; otherwise fall back to spawning Ruff on this one string (tests / lone code).
+    if precomputed is not None:
+        data = precomputed
+    else:
+        data = run_json_tool(
+            [tool_bin("ruff"), "check", "--select", _RUFF_QUALITY_SELECT,
+             "--config", _RUFF_CONFIG, "--output-format", "json", "--no-cache"],
+            code,
+        )
     if not data:
         return []
     issues = []
@@ -217,7 +222,7 @@ def run_quality_agent(state: ReviewState) -> dict:
     ast_issues = visitor.issues
 
     # Verified tier: AST + Ruff, deduped so overlaps become corroboration.
-    ruff_issues = _run_ruff_quality(state.code)
+    ruff_issues = _run_ruff_quality(state.code, (state.tool_findings or {}).get("ruff"))
     verified = dedupe(ast_issues + ruff_issues, _quality_canonical)
 
     # Suggested tier: LLM (kept separate from the verified dedupe).

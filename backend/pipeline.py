@@ -12,7 +12,9 @@ import shutil
 import tempfile
 import subprocess
 from models.state import ReviewState, Issue
-from agents.external_tools import walk_python_files
+from agents.external_tools import (walk_python_files, run_bandit_repo,
+                                   run_semgrep_repo, run_ruff_repo)
+from agents.quality_agent import _RUFF_QUALITY_SELECT, _RUFF_CONFIG
 from agents.architecture_agent import run_architecture_agent
 from agents.supervisor_agent import render_report
 from graph.review_graph import file_review_graph
@@ -32,8 +34,26 @@ def collect_repo_findings(repo_path: str, repo_name: str | None = None):
 
     # ── MAP: review each file with the per-file graph (4 agents in parallel) ──
     files = walk_python_files(repo_path)
+
+    # Run each deterministic tool ONCE over the whole repo, grouped by file, instead of
+    # spawning it per file inside every agent (3 boots total vs ~3×N). Each file is then
+    # handed only its own slice via ReviewState.tool_findings.
+    bandit_by_file = run_bandit_repo(repo_path)
+    semgrep_by_file = run_semgrep_repo(repo_path)
+    ruff_by_file = run_ruff_repo(repo_path, _RUFF_QUALITY_SELECT, _RUFF_CONFIG)
+
     for rel_path, code in files:
-        result = file_review_graph.invoke(ReviewState(code=code, filename=rel_path))
+        result = file_review_graph.invoke(ReviewState(
+            code=code,
+            filename=rel_path,
+            tool_findings={
+                # [] (not None) when a file has no findings: the batch DID run, so the
+                # agent must not re-spawn the tool. None would trigger the fallback.
+                "bandit": bandit_by_file.get(rel_path, []),
+                "semgrep": semgrep_by_file.get(rel_path, []),
+                "ruff": ruff_by_file.get(rel_path, []),
+            },
+        ))
         for key in _FILE_KEYS:
             output = result[key]
             if output:
