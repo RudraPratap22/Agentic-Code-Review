@@ -62,8 +62,12 @@ def health():
     return {"status": "ok"}
 
 
-def _do_review(target: str, post_comments: bool) -> ReviewResult:
-    """The actual review — runs on a background worker thread, not the request thread."""
+def _do_review(target: str, post_comments: bool) -> dict:
+    """The actual review — runs on a background worker thread, not the request thread.
+
+    Returns a plain JSON-serializable dict (not the ReviewResult object) so the job store
+    can persist it to disk.
+    """
     if "/pull/" in target:                         # a pull request
         owner, repo, number, issues = _collect_pr_findings(target)
         title = f"PR #{number} — {owner}/{repo}"
@@ -76,7 +80,7 @@ def _do_review(target: str, post_comments: bool) -> ReviewResult:
         summary=_summarize(issues),
         findings=issues,
         report_markdown=render_report(issues, title),
-    )
+    ).model_dump(mode="json")
 
 
 @app.post("/review")
