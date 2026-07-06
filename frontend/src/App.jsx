@@ -26,6 +26,7 @@ export default function App() {
     setResult(null);
     setLoading(true);
     try {
+      // 1. Submit — returns a job_id instantly instead of blocking until the review is done.
       const res = await fetch(`${API_BASE}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -35,11 +36,27 @@ export default function App() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `Request failed (${res.status})`);
       }
-      setResult(await res.json());
+      const { job_id } = await res.json();
+
+      // 2. Poll the job every 2s until it finishes — no single request stays open long.
+      const result = await pollJob(job_id);
+      setResult(result);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function pollJob(jobId) {
+    while (true) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const res = await fetch(`${API_BASE}/jobs/${jobId}`);
+      if (!res.ok) throw new Error(`Lost the job (${res.status})`);
+      const job = await res.json();
+      if (job.status === "done") return job.result;
+      if (job.status === "error") throw new Error(job.error || "Review failed");
+      // otherwise still queued/running → keep polling
     }
   }
 

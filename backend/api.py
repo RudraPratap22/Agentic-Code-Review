@@ -13,6 +13,7 @@ from models.state import Issue
 from agents.supervisor_agent import render_report
 from pipeline import collect_github_findings
 from github_pr import _collect_pr_findings, _post_findings
+import jobs
 
 app = FastAPI(title="Agentic Code Review API")
 
@@ -61,21 +62,34 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/review", response_model=ReviewResult)
+def _do_review(target: str, post_comments: bool) -> ReviewResult:
+    """The actual review — runs on a background worker thread, not the request thread."""
+    if "/pull/" in target:                         # a pull request
+        owner, repo, number, issues = _collect_pr_findings(target)
+        title = f"PR #{number} — {owner}/{repo}"
+        if post_comments and issues:
+            _post_findings(owner, repo, number, issues)
+    else:                                          # a repo URL
+        title, issues = collect_github_findings(target)
+    return ReviewResult(
+        title=title,
+        summary=_summarize(issues),
+        findings=issues,
+        report_markdown=render_report(issues, title),
+    )
+
+
+@app.post("/review")
 def review(req: ReviewRequest):
-    try:
-        if "/pull/" in req.target:                     # a pull request
-            owner, repo, number, issues = _collect_pr_findings(req.target)
-            title = f"PR #{number} — {owner}/{repo}"
-            if req.post_comments and issues:
-                _post_findings(owner, repo, number, issues)
-        else:                                          # a repo URL
-            title, issues = collect_github_findings(req.target)
-        return ReviewResult(
-            title=title,
-            summary=_summarize(issues),
-            findings=issues,
-            report_markdown=render_report(issues, title),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Kick off a review in the background and return a job_id immediately (no blocking)."""
+    job_id = jobs.submit(_do_review, req.target, req.post_comments)
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str):
+    """Poll a job: {status, result, error}. result is a ReviewResult once status is 'done'."""
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job id")
+    return job
