@@ -28,6 +28,16 @@ _SECRET_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# A real SQL-injection f-string has actual query STRUCTURE (SELECT…FROM, INSERT INTO,
+# UPDATE…SET, DELETE FROM) with an interpolated value ({}) inside it — not merely a SQL
+# keyword appearing in prose. Matching only keyword substrings flagged our own LLM prompt
+# strings (e.g. "...class attributes WHERE a reader...") as CRITICAL false positives.
+_SQL_INJECTION_RE = re.compile(
+    r"(SELECT\b.+?\bFROM\b|INSERT\s+INTO\b|UPDATE\b.+?\bSET\b|DELETE\s+FROM\b|"
+    r"DROP\s+(TABLE|DATABASE)\b).*?\{\}",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Function calls that are inherently dangerous
 _DANGEROUS_CALLS = {
     "eval": ("arbitrary-code-execution", Severity.CRITICAL,
@@ -98,17 +108,20 @@ class SecurityVisitor(ast.NodeVisitor):
 
     def visit_JoinedStr(self, node: ast.JoinedStr):
         """
-        Check for f-strings used in SQL-like contexts.
+        Flag f-strings that build a SQL statement with an interpolated value.
         JoinedStr is the AST node for f-strings.
         """
-        # We reconstruct the f-string template to look for SQL keywords
-        raw_parts = [
-            p.value for p in node.values
-            if isinstance(p, ast.Constant) and isinstance(p.value, str)
-        ]
-        combined = " ".join(raw_parts).upper()
-        sql_keywords = ("SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "WHERE")
-        if any(kw in combined for kw in sql_keywords):
+        # Rebuild the f-string as a TEMPLATE: literal text kept, each interpolated value
+        # ({...}) replaced by a "{}" marker. We then require a real SQL statement structure
+        # with a "{}" inside it — so a keyword merely appearing in prose won't match.
+        parts = []
+        for p in node.values:
+            if isinstance(p, ast.Constant) and isinstance(p.value, str):
+                parts.append(p.value)
+            elif isinstance(p, ast.FormattedValue):
+                parts.append("{}")
+        template = "".join(parts)
+        if _SQL_INJECTION_RE.search(template):
             self._add(
                 node,
                 Severity.CRITICAL,
