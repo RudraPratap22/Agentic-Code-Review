@@ -98,9 +98,12 @@ def _run_llm_checks(code: str) -> list[Issue]:
 
 Do NOT flag missing docstrings or function length — those are handled separately.
 Do NOT flag security, performance, or any other category — only naming and SRP.
-Do NOT flag idiomatic short loop/comprehension variables (a, i, x, f, _, e, ...) —
-only flag genuinely unclear names in meaningful scopes (function params, module-level
-names, attributes).
+Do NOT flag idiomatic short names — these are conventional and correct, never flag them:
+  loop/temp vars (a, b, i, j, x, n, _, e, tmp, ctx),
+  a generic callable (fn, cb, func), a response/result (r, res, resp, ret),
+  data/dict (d), and ANY short name inside a test file (test_*.py / a tests/ dir).
+Only flag genuinely unclear names in meaningful production scopes (public function
+params, module-level names, class attributes) where a reader truly can't tell the intent.
 For EVERY issue you MUST quote the exact offending line verbatim in the `evidence` field.
 If you cannot point to a specific line of code, DO NOT report the issue.
 Return only real issues, not nitpicks. If the code is clean, return an empty list.
@@ -120,10 +123,10 @@ CODE:
         # cited evidence is dropped. This kills "no issue found"-style hallucinations.
         if not (item.evidence and item.evidence.strip()):
             continue
-        try:
-            sev = Severity(item.severity.lower())
-        except ValueError:
-            sev = Severity.LOW
+        # This agent only surfaces naming + SRP — both are style preferences, never real
+        # defects. Force them to LOW (ignoring the LLM's self-rating, which tends to
+        # inflate these to medium/high) so a rename never looks as urgent as a real bug.
+        sev = Severity.LOW
         issues.append(Issue(
             agent="quality",
             severity=sev,

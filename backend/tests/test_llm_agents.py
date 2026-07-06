@@ -21,3 +21,15 @@ def test_llm_degrades_on_failure(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-dummy")
     monkeypatch.setattr("agents.quality_agent.llm_invoke", lambda *a, **k: None)  # simulate total failure
     assert _run_llm_checks("y = 1") == []                # degraded, no crash
+
+
+def test_naming_srp_severity_capped_to_low(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-dummy")
+    # The LLM over-rates a naming nit as 'high' — we must force it down to 'low'.
+    fake = LLMQualityResponse(issues=[
+        LLMIssue(category="naming", severity="high", description="d", suggestion="x", evidence="job=1"),
+    ])
+    monkeypatch.setattr("agents.quality_agent.llm_invoke", lambda *a, **k: fake)
+    issues = _run_llm_checks("job = 1")
+    assert len(issues) == 1
+    assert issues[0].severity.value == "low"             # inflated 'high' capped to 'low'
