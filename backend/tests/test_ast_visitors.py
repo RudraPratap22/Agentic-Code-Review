@@ -20,10 +20,19 @@ def test_security_flags_eval_secret_sql():
     assert "arbitrary-code-execution" in cats
 
 
-def test_quality_flags_too_many_args_and_missing_docstring():
+def test_sql_injection_ignores_prose_with_sql_keywords():
+    # An f-string that merely contains a SQL keyword in prose (like our LLM prompts) must
+    # NOT be flagged — only real query structure with an interpolated value counts.
+    prose = 'msg = f"Flag names WHERE a reader cannot tell intent in {scope}."'
+    assert "sql-injection" not in _cats(SecurityVisitor, prose)
+    real = 'q = f"DELETE FROM users WHERE id = {uid}"'
+    assert "sql-injection" in _cats(SecurityVisitor, real)
+
+
+def test_quality_flags_too_many_args_but_not_docstring():
     cats = _cats(QualityVisitor, "def f(a, b, c, d, e, g):\n    return a")
     assert "too-many-arguments" in cats
-    assert "missing-docstring" in cats
+    assert "missing-docstring" not in cats     # docstrings now owned by the documentation agent
 
 
 def test_performance_flags_blocking_in_async():

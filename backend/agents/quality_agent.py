@@ -26,17 +26,9 @@ class QualityVisitor(ast.NodeVisitor):
         self.issues: list[Issue] = []
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
-        # Missing docstring
-        if not (node.body and isinstance(node.body[0], ast.Expr)
-                and isinstance(node.body[0].value, ast.Constant)):
-            self.issues.append(Issue(
-                agent="quality",
-                severity=Severity.LOW,
-                category="missing-docstring",
-                description=f"Function '{node.name}' has no docstring",
-                line_number=node.lineno,
-                suggestion=f"Add a docstring explaining what '{node.name}' does.",
-            ))
+        # Note: missing-docstring is intentionally NOT checked here — the documentation
+        # agent is the single owner of docstring findings (module/function/class). Having
+        # both agents flag it produced duplicate findings on every undocumented function.
 
         # Function too long
         length = node.end_lineno - node.lineno
