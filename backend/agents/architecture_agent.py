@@ -299,7 +299,7 @@ def _metrics_digest(modules_metrics, cycles):
 
 def _run_design_interpretation(modules_metrics, cycles):
     """LLM design observations grounded ONLY in the measured metrics, each citing one."""
-    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
+    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"), temperature=0)
     structured = llm.with_structured_output(LLMArchResponse)
 
     prompt = f"""You are a software architecture reviewer. You are given ONLY measured

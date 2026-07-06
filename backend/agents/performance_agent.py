@@ -192,7 +192,7 @@ def _run_scalability_lens(code: str) -> list[Issue]:
     line, and it must NOT propose infrastructure/capacity changes (load balancers,
     vertical/horizontal scaling, broker choice) — those aren't grounded in the source.
     """
-    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
+    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"), temperature=0)
     structured = llm.with_structured_output(LLMScalabilityResponse)
 
     prompt = f"""You are a scalability reviewer. Analyze the Python code ONLY for problems

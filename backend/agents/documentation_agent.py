@@ -101,6 +101,7 @@ def _run_llm_doc_checks(code: str) -> list[Issue]:
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",
         api_key=os.getenv("GROQ_API_KEY"),
+        temperature=0,
     )
     structured_llm = llm.with_structured_output(LLMDocResponse)
 

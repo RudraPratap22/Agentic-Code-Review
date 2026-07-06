@@ -49,6 +49,26 @@ def drop_test_noise(issues: list[Issue]) -> list[Issue]:
     ]
 
 
+def clean_findings(issues: list[Issue]) -> list[Issue]:
+    """Post-process a collected finding list: suppress noise and calibrate the LLM tier.
+
+    - Drop the verified-rule noise on test files (drop_test_noise).
+    - Drop ALL suggested (LLM) findings on test files — nobody wants naming/perf/doc
+      opinions on test code ("offload your test poll loop to Celery").
+    - Cap the suggested tier at MEDIUM: a 'lower-confidence' hint being HIGH/CRITICAL is a
+      contradiction, and the LLM tends to inflate. (Verified findings keep their severity.)
+    """
+    out: list[Issue] = []
+    for i in drop_test_noise(issues):
+        if i.tier == "suggested":
+            if is_test_file(i.filename):
+                continue
+            if i.severity in (Severity.CRITICAL, Severity.HIGH):
+                i.severity = Severity.MEDIUM
+        out.append(i)
+    return out
+
+
 def llm_invoke(structured_llm, prompt, retries: int = 3, base_delay: float = 2.0):
     """Invoke an LLM with retry + exponential backoff on transient errors.
 
