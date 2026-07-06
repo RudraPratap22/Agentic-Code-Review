@@ -11,6 +11,7 @@ import re
 import requests
 from dotenv import load_dotenv
 from models.state import ReviewState
+from agents.external_tools import drop_test_noise
 from agents.supervisor_agent import render_report
 from graph.review_graph import file_review_graph
 
@@ -89,7 +90,7 @@ def _collect_pr_findings(pr_url: str):
                         issue.filename = name
                         all_issues.append(issue)
 
-    return owner, repo, number, all_issues
+    return owner, repo, number, drop_test_noise(all_issues)
 
 
 def review_pr(pr_url: str) -> str:

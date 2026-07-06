@@ -7,6 +7,7 @@ way — the tool itself practices the DRY principle it reviews for.
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -15,6 +16,37 @@ import tempfile
 import subprocess
 from typing import Callable, Hashable
 from models.state import Issue, Severity
+
+
+# ── Test-file noise suppression ───────────────────────────────────────────────
+# Test files legitimately use asserts, skip docstrings, and hardcode expected values —
+# so production rules generate pure noise on them. We drop a small, explicit set of
+# low-value rules WHEN (and only when) the finding is on a test file. Production code is
+# never affected; genuine issues on tests (e.g. a real security bug) still surface.
+
+_TEST_FILE_RE = re.compile(r"(^|/)tests?/|(^|/)test_[^/]*\.py$|_test\.py$")
+
+# Rules/categories that are noise on test files (matched against rule_id OR category):
+_TEST_NOISE = {
+    "B101",                                                  # Bandit: assert_used
+    "PLR2004", "ARG001", "ARG002", "ARG005",                 # Ruff: magic value / unused arg
+    "missing-docstring", "missing-function-docstring",       # our AST docstring checks
+    "missing-module-docstring",
+}
+
+
+def is_test_file(filename: str | None) -> bool:
+    """True if `filename` looks like a test file (tests/ dir or test_*.py / *_test.py)."""
+    return bool(filename and _TEST_FILE_RE.search(filename))
+
+
+def drop_test_noise(issues: list[Issue]) -> list[Issue]:
+    """Remove low-value production-rule findings that landed on test files."""
+    return [
+        i for i in issues
+        if not (is_test_file(i.filename)
+                and (i.rule_id in _TEST_NOISE or i.category in _TEST_NOISE))
+    ]
 
 
 def llm_invoke(structured_llm, prompt, retries: int = 3, base_delay: float = 2.0):
