@@ -21,7 +21,7 @@ from langgraph.types import Send
 
 from models.state import ReviewState, Issue
 from agents.external_tools import (walk_python_files, run_bandit_repo,
-                                    run_semgrep_repo, run_ruff_repo, drop_test_noise)
+                                    run_semgrep_repo, run_ruff_repo, clean_findings)
 from agents.quality_agent import _RUFF_QUALITY_SELECT, _RUFF_CONFIG
 from agents.architecture_agent import run_architecture_agent
 from graph.review_graph import file_review_graph
@@ -81,8 +81,8 @@ def review_one_file(payload: dict) -> dict:
             for issue in output.issues:
                 issue.filename = payload["rel_path"]   # stamp which file this came from
                 issues.append(issue)
-    # Drop production-rule noise on test files (asserts, missing docstrings, magic values).
-    return {"all_issues": drop_test_noise(issues)}     # reducer ADDs this into the shared list
+    # Suppress test-file noise + calibrate the suggested tier before merging.
+    return {"all_issues": clean_findings(issues)}      # reducer ADDs this into the shared list
 
 
 def architecture(state: RepoState) -> dict:

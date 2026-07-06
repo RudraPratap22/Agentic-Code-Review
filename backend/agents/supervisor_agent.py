@@ -89,7 +89,7 @@ class SupervisorNarrative(BaseModel):
 
 def _write_narrative(filename: str, digest: str, count_str: str) -> SupervisorNarrative:
     """Ask the LLM for the summary + priorities ONLY, strictly from the given findings."""
-    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
+    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"), temperature=0)
     structured = llm.with_structured_output(SupervisorNarrative)
     prompt = f"""You are a senior code-review supervisor writing the narrative for a report on `{filename}`.
 

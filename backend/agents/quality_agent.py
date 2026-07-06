@@ -89,6 +89,7 @@ def _run_llm_checks(code: str) -> list[Issue]:
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",
         api_key=os.getenv("GROQ_API_KEY"),
+        temperature=0,
     )
     structured_llm = llm.with_structured_output(LLMQualityResponse)
 
@@ -98,12 +99,15 @@ def _run_llm_checks(code: str) -> list[Issue]:
 
 Do NOT flag missing docstrings or function length — those are handled separately.
 Do NOT flag security, performance, or any other category — only naming and SRP.
-Do NOT flag idiomatic short names — these are conventional and correct, never flag them:
+Do NOT flag names that follow a normal Python convention — these are correct, never flag them:
   loop/temp vars (a, b, i, j, x, n, _, e, tmp, ctx),
-  a generic callable (fn, cb, func), a response/result (r, res, resp, ret),
-  data/dict (d), and ANY short name inside a test file (test_*.py / a tests/ dir).
+  a generic callable (fn, cb, func), a response/result (r, res, resp, ret), data/dict (d),
+  UPPERCASE constants (JOBS, MAX_WORKERS — the caps ARE the meaning),
+  _underscore-prefixed private names (_pool, _run — privacy is the signal, not the length),
+  and ANY name inside a test file (test_*.py or a tests/ directory).
 Only flag genuinely unclear names in meaningful production scopes (public function
 params, module-level names, class attributes) where a reader truly can't tell the intent.
+Prefer returning an empty list over a nitpick — most code names are fine.
 For EVERY issue you MUST quote the exact offending line verbatim in the `evidence` field.
 If you cannot point to a specific line of code, DO NOT report the issue.
 Return only real issues, not nitpicks. If the code is clean, return an empty list.
