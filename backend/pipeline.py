@@ -44,16 +44,42 @@ def review_repo(repo_path: str, repo_name: str | None = None) -> str:
     return render_report(issues, title)
 
 
+def _clone_url(url: str) -> str:
+    """Inject GITHUB_TOKEN so private GitHub repos can be cloned.
+
+    Public repos and non-GitHub / non-https URLs are returned unchanged, so the public
+    path behaves exactly as before.
+    """
+    token = os.getenv("GITHUB_TOKEN")
+    if token and url.startswith("https://github.com/"):
+        return url.replace("https://", f"https://x-access-token:{token}@", 1)
+    return url
+
+
+def _redact(text: str) -> str:
+    """Scrub the token from any text shown to the user.
+
+    A tokenized clone URL appears in git's stderr on failure — without this it would leak
+    the token into the job's error message and back to the client.
+    """
+    token = os.getenv("GITHUB_TOKEN")
+    return text.replace(token, "***") if token else text
+
+
 def collect_github_findings(url: str):
-    """Producer for a repo URL: clone → collect → (title, list[Issue]); always cleans up."""
+    """Producer for a repo URL: clone → collect → (title, list[Issue]); always cleans up.
+
+    Uses GITHUB_TOKEN (when set) to clone private repos; the token is redacted from any
+    error surfaced to the caller.
+    """
     tmpdir = tempfile.mkdtemp(prefix="acr_clone_")
     try:
         proc = subprocess.run(
-            ["git", "clone", "--depth", "1", url, tmpdir],
+            ["git", "clone", "--depth", "1", _clone_url(url), tmpdir],
             capture_output=True, text=True,
         )
         if proc.returncode != 0:
-            raise RuntimeError(f"git clone failed: {proc.stderr.strip()}")
+            raise RuntimeError(f"git clone failed: {_redact(proc.stderr.strip())}")
 
         repo_name = url.rstrip("/").split("/")[-1].removesuffix(".git")
         return collect_repo_findings(tmpdir, repo_name=repo_name)
