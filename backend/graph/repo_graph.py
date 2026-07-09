@@ -20,7 +20,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 
 from models.state import ReviewState, Issue
-from agents.external_tools import (walk_python_files, run_bandit_repo,
+from agents.external_tools import (walk_source_files, run_bandit_repo,
                                     run_semgrep_repo, run_ruff_repo, clean_findings)
 from agents.quality_agent import _RUFF_QUALITY_SELECT, _RUFF_CONFIG
 from agents.architecture_agent import run_architecture_agent
@@ -42,7 +42,8 @@ class RepoState(TypedDict):
 def prep(state: RepoState) -> dict:
     """Walk the repo and run the three batched tool scans once, grouped by file."""
     repo_path = state["repo_path"]
-    files = walk_python_files(repo_path)
+    files = walk_source_files(repo_path)          # [(rel_path, code, language)]
+    # Bandit/Ruff only understand Python and ignore other files; Semgrep is multi-language.
     bandit = run_bandit_repo(repo_path)
     semgrep = run_semgrep_repo(repo_path)
     ruff = run_ruff_repo(repo_path, _RUFF_QUALITY_SELECT, _RUFF_CONFIG)
@@ -50,7 +51,7 @@ def prep(state: RepoState) -> dict:
         rel: {"bandit": bandit.get(rel, []),
               "semgrep": semgrep.get(rel, []),
               "ruff": ruff.get(rel, [])}
-        for rel, _code in files
+        for rel, _code, _lang in files
     }
     return {"files": files, "tool_findings_by_file": tf}
 
@@ -61,9 +62,10 @@ def fan_out(state: RepoState):
         Send("review_one_file", {
             "rel_path": rel,
             "code": code,
+            "language": language,
             "tool_findings": state["tool_findings_by_file"][rel],
         })
-        for rel, code in state["files"]
+        for rel, code, language in state["files"]
     ]
 
 
@@ -72,6 +74,7 @@ def review_one_file(payload: dict) -> dict:
     result = file_review_graph.invoke(ReviewState(
         code=payload["code"],
         filename=payload["rel_path"],
+        language=payload["language"],
         tool_findings=payload["tool_findings"],
     ))
     issues: list[Issue] = []

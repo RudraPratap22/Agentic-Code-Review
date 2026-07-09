@@ -77,7 +77,7 @@ class LLMQualityResponse(BaseModel):
     issues: list[LLMIssue] = Field(default_factory=list)
 
 
-def _run_llm_checks(code: str) -> list[Issue]:
+def _run_llm_checks(code: str, language: str = "python") -> list[Issue]:
     llm = ChatGroq(
         model="llama-3.3-70b-versatile",
         api_key=os.getenv("GROQ_API_KEY"),
@@ -85,7 +85,7 @@ def _run_llm_checks(code: str) -> list[Issue]:
     )
     structured_llm = llm.with_structured_output(LLMQualityResponse)
 
-    prompt = f"""You are a code quality reviewer. Analyze the following Python code ONLY for:
+    prompt = f"""You are a code quality reviewer. Analyze the following {language} code ONLY for:
 1. Poor variable/function naming (e.g. single-letter names, non-descriptive names like 'data', 'result', 'tmp')
 2. Single Responsibility Principle violations (a function doing more than one thing)
 
@@ -105,7 +105,7 @@ If you cannot point to a specific line of code, DO NOT report the issue.
 Return only real issues, not nitpicks. If the code is clean, return an empty list.
 
 CODE:
-```python
+```{language}
 {code}
 ```"""
 
@@ -208,24 +208,29 @@ def _run_ruff_quality(code: str, precomputed: list | None = None) -> list[Issue]
 # ── LangGraph node ─────────────────────────────────────────────────────────────
 
 def run_quality_agent(state: ReviewState) -> dict:
-    try:
-        tree = ast.parse(state.code)
-    except SyntaxError as e:
-        return {"quality_output": AgentOutput(
-            agent_name="quality",
-            summary=f"Could not parse code: {e}",
-        )}
+    is_python = state.language == "python"
 
-    visitor = QualityVisitor()
-    visitor.visit(tree)
-    ast_issues = visitor.issues
+    ast_issues: list[Issue] = []
+    ruff_issues: list[Issue] = []
+    if is_python:                       # our AST checks and Ruff are Python-only
+        try:
+            tree = ast.parse(state.code)
+        except SyntaxError as e:
+            return {"quality_output": AgentOutput(
+                agent_name="quality",
+                summary=f"Could not parse code: {e}",
+            )}
+
+        visitor = QualityVisitor()
+        visitor.visit(tree)
+        ast_issues = visitor.issues
+        ruff_issues = _run_ruff_quality(state.code, (state.tool_findings or {}).get("ruff"))
 
     # Verified tier: AST + Ruff, deduped so overlaps become corroboration.
-    ruff_issues = _run_ruff_quality(state.code, (state.tool_findings or {}).get("ruff"))
     verified = dedupe(ast_issues + ruff_issues, _quality_canonical)
 
-    # Suggested tier: LLM (kept separate from the verified dedupe).
-    llm_issues = _run_llm_checks(state.code)
+    # Suggested tier: LLM (kept separate from the verified dedupe). Works on any language.
+    llm_issues = _run_llm_checks(state.code, state.language)
 
     all_issues = verified + llm_issues
     corroborated = sum(1 for i in verified if i.corroborated_by)

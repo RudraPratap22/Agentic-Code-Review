@@ -6,14 +6,16 @@ from models.state import AgentOutput, Issue, Severity
 
 def test_fan_out_emits_one_send_per_file():
     state = {
-        "files": [("a.py", "x=1"), ("b.py", "y=2"), ("c.py", "z=3")],
-        "tool_findings_by_file": {"a.py": {}, "b.py": {}, "c.py": {}},
+        "files": [("a.py", "x=1", "python"), ("b.js", "y=2", "javascript"),
+                  ("c.py", "z=3", "python")],
+        "tool_findings_by_file": {"a.py": {}, "b.js": {}, "c.py": {}},
     }
     sends = rg.fan_out(state)
     assert len(sends) == 3                                  # one Send per file
     assert {s.node for s in sends} == {"review_one_file"}   # all into the per-file node
-    # each Send carries that file's payload
-    assert {s.arg["rel_path"] for s in sends} == {"a.py", "b.py", "c.py"}
+    # each Send carries that file's payload, including its language
+    assert {s.arg["rel_path"] for s in sends} == {"a.py", "b.js", "c.py"}
+    assert {s.arg["language"] for s in sends} == {"python", "javascript"}
 
 
 def test_reducer_collects_issues_across_files(monkeypatch):
@@ -31,7 +33,7 @@ def test_reducer_collects_issues_across_files(monkeypatch):
 
     monkeypatch.setattr(rg, "file_review_graph", FakeGraph())
     monkeypatch.setattr(rg, "prep", lambda s: {
-        "files": [("a.py", ""), ("b.py", "")],
+        "files": [("a.py", "", "python"), ("b.py", "", "python")],
         "tool_findings_by_file": {"a.py": {}, "b.py": {}},
     })
     monkeypatch.setattr(rg, "architecture", lambda s: {"all_issues": []})
