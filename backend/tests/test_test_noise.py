@@ -18,6 +18,13 @@ def test_is_test_file():
     assert not is_test_file(None)
 
 
+def test_is_test_file_javascript_conventions():
+    assert is_test_file("src/Button.test.jsx")
+    assert is_test_file("src/api.spec.ts")
+    assert is_test_file("src/__tests__/helper.js")
+    assert not is_test_file("src/Button.jsx")       # production JS untouched
+
+
 def test_drops_noise_rules_only_on_test_files():
     issues = [
         _issue("tests/test_x.py", rule_id="B101"),                     # noise on test → drop
