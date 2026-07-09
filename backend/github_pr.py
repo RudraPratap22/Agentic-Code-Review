@@ -11,7 +11,7 @@ import re
 import requests
 from dotenv import load_dotenv
 from models.state import ReviewState
-from agents.external_tools import clean_findings
+from agents.external_tools import clean_findings, detect_language
 from agents.supervisor_agent import render_report
 from graph.review_graph import file_review_graph
 
@@ -74,14 +74,16 @@ def _collect_pr_findings(pr_url: str):
     for f in resp.json():
         name = f["filename"]
         patch = f.get("patch")
-        if f["status"] == "removed" or not name.endswith(".py") or not patch:
-            continue                              # skip deletions / non-python / binary
+        language = detect_language(name)
+        if f["status"] == "removed" or not language or not patch:
+            continue                              # skip deletions / unsupported / binary
         added = _added_lines(patch)
         if not added:
             continue
 
         code = requests.get(f["raw_url"], headers=_headers(), timeout=30).text  # full new file
-        result = file_review_graph.invoke(ReviewState(code=code, filename=name))
+        result = file_review_graph.invoke(
+            ReviewState(code=code, filename=name, language=language))
         for key in _FILE_KEYS:
             output = result[key]
             if output:

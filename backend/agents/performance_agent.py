@@ -186,7 +186,7 @@ class LLMScalabilityResponse(BaseModel):
     issues: list[LLMScalabilityIssue] = Field(default_factory=list)
 
 
-def _run_scalability_lens(code: str) -> list[Issue]:
+def _run_scalability_lens(code: str, language: str = "python") -> list[Issue]:
     """
     LLM suggestions for scalability problems VISIBLE IN THE CODE only. It must cite a
     line, and it must NOT propose infrastructure/capacity changes (load balancers,
@@ -195,7 +195,7 @@ def _run_scalability_lens(code: str) -> list[Issue]:
     llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"), temperature=0)
     structured = llm.with_structured_output(LLMScalabilityResponse)
 
-    prompt = f"""You are a scalability reviewer. Analyze the Python code ONLY for problems
+    prompt = f"""You are a scalability reviewer. Analyze the {language} code ONLY for problems
 VISIBLE IN THE CODE that will not scale, such as:
 1. Heavy/synchronous work in a request handler that should be offloaded to a background task queue
 2. Missing pagination / unbounded queries (e.g. SELECT * with no limit)
@@ -210,7 +210,7 @@ STRICT RULES:
 - If you cannot point to a specific line, DO NOT report the issue.
 
 CODE:
-```python
+```{language}
 {code}
 ```"""
 
@@ -241,24 +241,29 @@ CODE:
 
 
 def run_performance_agent(state: ReviewState) -> dict:
-    try:
-        tree = ast.parse(state.code)
-    except SyntaxError as e:
-        return {"performance_output": AgentOutput(
-            agent_name="performance",
-            summary=f"Could not parse code: {e}",
-        )}
+    is_python = state.language == "python"
 
-    visitor = PerformanceVisitor()
-    visitor.visit(tree)
-    ast_issues = visitor.issues
+    ast_issues: list[Issue] = []
+    ruff_issues: list[Issue] = []
+    if is_python:                       # our AST checks and Ruff are Python-only
+        try:
+            tree = ast.parse(state.code)
+        except SyntaxError as e:
+            return {"performance_output": AgentOutput(
+                agent_name="performance",
+                summary=f"Could not parse code: {e}",
+            )}
+
+        visitor = PerformanceVisitor()
+        visitor.visit(tree)
+        ast_issues = visitor.issues
+        ruff_issues = _run_ruff_perf(state.code)
 
     # Verified tier: AST + Ruff PERF/ASYNC, deduped so overlaps become corroboration.
-    ruff_issues = _run_ruff_perf(state.code)
     verified = dedupe(ast_issues + ruff_issues, _perf_canonical)
 
-    # Suggested tier: the code-grounded scalability lens.
-    llm_issues = _run_scalability_lens(state.code)
+    # Suggested tier: the code-grounded scalability lens. Works on any language.
+    llm_issues = _run_scalability_lens(state.code, state.language)
 
     all_issues = verified + llm_issues
     corroborated = sum(1 for i in verified if i.corroborated_by)

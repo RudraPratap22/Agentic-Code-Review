@@ -210,25 +210,65 @@ SKIP_DIRS = {"venv", ".venv", "__pycache__", ".git", "node_modules", "build",
              "dist", ".ruff_cache", ".semgrep_cache", ".mypy_cache", ".pytest_cache"}
 
 
-def walk_python_files(repo_path: str) -> list[tuple[str, str]]:
-    """Return [(relative_path, source_code)] for every .py file under repo_path.
+# ── Language detection ────────────────────────────────────────────────────────
+# Which languages we review. Python gets the full stack (our AST visitors + Bandit +
+# Ruff + Semgrep); the others currently get Semgrep (deterministic) + the LLM tier.
 
-    Junk dirs (venv, .git, caches, ...) are pruned in place so os.walk never descends
-    into them. Files that can't be read are skipped rather than crashing the review.
+LANG_BY_EXT = {
+    ".py": "python",
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript",
+    ".go": "go",
+    ".java": "java",
+    ".rb": "ruby",
+    ".php": "php",
+}
+
+# The extension to use when we must write a snippet to a temp file for a tool.
+_PRIMARY_EXT = {"python": ".py", "javascript": ".js", "typescript": ".ts",
+                "go": ".go", "java": ".java", "ruby": ".rb", "php": ".php"}
+
+
+def detect_language(filename: str) -> str | None:
+    """Map a filename to a supported language, or None if we don't review it."""
+    return LANG_BY_EXT.get(os.path.splitext(filename)[1].lower())
+
+
+def ext_for_language(language: str) -> str:
+    """Temp-file extension for a language, so tools parse the snippet correctly."""
+    return _PRIMARY_EXT.get(language, ".txt")
+
+
+def walk_source_files(repo_path: str) -> list[tuple[str, str, str]]:
+    """Return [(relative_path, source_code, language)] for every supported source file.
+
+    Junk dirs (venv, .git, node_modules, caches, ...) are pruned in place so os.walk never
+    descends into them. Minified bundles and unreadable files are skipped rather than
+    crashing the review.
     """
-    files: list[tuple[str, str]] = []
+    files: list[tuple[str, str, str]] = []
     for dirpath, dirnames, filenames in os.walk(repo_path):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
         for f in filenames:
-            if f.endswith(".py"):
-                full = os.path.join(dirpath, f)
-                try:
-                    with open(full, encoding="utf-8", errors="ignore") as fh:
-                        code = fh.read()
-                except OSError:
-                    continue
-                files.append((os.path.relpath(full, repo_path), code))
+            language = detect_language(f)
+            if not language or f.endswith((".min.js", ".bundle.js")):
+                continue                                  # unsupported or generated
+            full = os.path.join(dirpath, f)
+            try:
+                with open(full, encoding="utf-8", errors="ignore") as fh:
+                    code = fh.read()
+            except OSError:
+                continue
+            files.append((os.path.relpath(full, repo_path), code, language))
     return files
+
+
+def walk_python_files(repo_path: str) -> list[tuple[str, str]]:
+    """Python-only view of walk_source_files, as [(relative_path, source_code)].
+
+    Kept for the architecture agent, whose import-graph analysis is Python-specific.
+    """
+    return [(p, code) for p, code, lang in walk_source_files(repo_path) if lang == "python"]
 
 
 # Lower number = more severe; used to pick the representative when merging duplicates.

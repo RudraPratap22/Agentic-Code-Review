@@ -19,7 +19,7 @@ import tempfile
 import subprocess
 import os
 from models.state import ReviewState, AgentOutput, Issue, Severity
-from agents.external_tools import dedupe
+from agents.external_tools import dedupe, ext_for_language
 
 
 # Patterns that almost certainly indicate a hardcoded secret
@@ -234,7 +234,8 @@ def _semgrep_bin() -> str:
     return candidate if os.path.exists(candidate) else (shutil.which("semgrep") or "semgrep")
 
 
-def _run_semgrep(code: str, precomputed: list | None = None) -> list[Issue]:
+def _run_semgrep(code: str, precomputed: list | None = None,
+                 language: str = "python") -> list[Issue]:
     """
     Return Semgrep findings as Issues (tier='verified').
 
@@ -250,8 +251,9 @@ def _run_semgrep(code: str, precomputed: list | None = None) -> list[Issue]:
     else:
         tmp_path = None
         try:
+            # Suffix must match the language or Semgrep parses the snippet as the wrong one.
             with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", delete=False, encoding="utf-8"
+                mode="w", suffix=ext_for_language(language), delete=False, encoding="utf-8"
             ) as tmp:
                 tmp.write(code)
                 tmp_path = tmp.name
@@ -350,29 +352,33 @@ def run_security_agent(state: ReviewState) -> dict:
     LangGraph node function. Takes the full state, returns only the fields
     it updates — LangGraph merges this dict back into the state.
 
-    Runs THREE deterministic sources (our AST visitor + Bandit + Semgrep), then
-    deterministically dedupes them: duplicates collapse into one issue marked as
-    corroborated by the other tools.
+    For Python, runs THREE deterministic sources (our AST visitor + Bandit + Semgrep);
+    other languages get Semgrep, which is multi-language. Findings are then deterministically
+    deduped: duplicates collapse into one issue marked as corroborated by the other tools.
     """
-    try:
-        tree = ast.parse(state.code)
-    except SyntaxError as e:
-        output = AgentOutput(
-            agent_name="security",
-            issues=[],
-            summary=f"Could not parse code: {e}",
-        )
-        return {"security_output": output}
+    is_python = state.language == "python"
 
-    visitor = SecurityVisitor()
-    visitor.visit(tree)
-    ast_issues = visitor.issues  # already tagged source='custom-ast' (model default)
+    ast_issues: list[Issue] = []
+    if is_python:                       # our AST visitor and Bandit only understand Python
+        try:
+            tree = ast.parse(state.code)
+        except SyntaxError as e:
+            output = AgentOutput(
+                agent_name="security",
+                issues=[],
+                summary=f"Could not parse code: {e}",
+            )
+            return {"security_output": output}
+
+        visitor = SecurityVisitor()
+        visitor.visit(tree)
+        ast_issues = visitor.issues  # already tagged source='custom-ast' (model default)
 
     # Use pre-computed findings from the repo-level batched run when present; a missing
     # key returns None → the runner falls back to spawning on this one string (tests).
     tf = state.tool_findings or {}
-    bandit_issues = _run_bandit(state.code, tf.get("bandit"))
-    semgrep_issues = _run_semgrep(state.code, tf.get("semgrep"))
+    bandit_issues = _run_bandit(state.code, tf.get("bandit")) if is_python else []
+    semgrep_issues = _run_semgrep(state.code, tf.get("semgrep"), state.language)
 
     raw_count = len(ast_issues) + len(bandit_issues) + len(semgrep_issues)
     all_issues = dedupe(ast_issues + bandit_issues + semgrep_issues, _canonical_key)

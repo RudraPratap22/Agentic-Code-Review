@@ -68,6 +68,12 @@ class ReviewState(BaseModel):
     # Input
     code: str = Field(description="The source code to review")
     filename: str = Field(default="untitled.py", description="Name of the file being reviewed")
+    language: str = Field(
+        default="python",
+        description="Source language of `code` (python, javascript, typescript, go, ...). "
+                    "Agents use it to route: Python-only tools (our AST visitors, Bandit, "
+                    "Ruff) are skipped for other languages, which still get Semgrep + LLM.",
+    )
     repo_path: Optional[str] = Field(
         default=None,
         description="Path to the repo root, for whole-project (architecture) review. "
