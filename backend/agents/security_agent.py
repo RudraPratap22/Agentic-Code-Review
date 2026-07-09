@@ -11,7 +11,6 @@ tier="verified".
 """
 
 import ast
-import re
 import sys
 import json
 import shutil
@@ -20,23 +19,10 @@ import subprocess
 import os
 from models.state import ReviewState, AgentOutput, Issue, Severity
 from agents.external_tools import dedupe, ext_for_language
-
-
-# Patterns that almost certainly indicate a hardcoded secret
-_SECRET_PATTERNS = re.compile(
-    r"(api[_-]?key|secret|password|token|auth|access[_-]?key|private[_-]?key)",
-    re.IGNORECASE,
-)
-
-# A real SQL-injection f-string has actual query STRUCTURE (SELECT…FROM, INSERT INTO,
-# UPDATE…SET, DELETE FROM) with an interpolated value ({}) inside it — not merely a SQL
-# keyword appearing in prose. Matching only keyword substrings flagged our own LLM prompt
-# strings (e.g. "...class attributes WHERE a reader...") as CRITICAL false positives.
-_SQL_INJECTION_RE = re.compile(
-    r"(SELECT\b.+?\bFROM\b|INSERT\s+INTO\b|UPDATE\b.+?\bSET\b|DELETE\s+FROM\b|"
-    r"DROP\s+(TABLE|DATABASE)\b).*?\{\}",
-    re.IGNORECASE | re.DOTALL,
-)
+from agents.treesitter_js import run_js_security_ast, SUPPORTED_LANGUAGES as _JS_LANGUAGES
+# Shared with the JS/TS tree-sitter visitor so both languages detect the same bugs.
+from agents.security_patterns import (SECRET_NAME_RE as _SECRET_PATTERNS,
+                                      SQL_INJECTION_RE as _SQL_INJECTION_RE)
 
 # Function calls that are inherently dangerous
 _DANGEROUS_CALLS = {
@@ -321,10 +307,13 @@ def _semgrep_canonical(rule_id: str) -> str | None:
         return "sql-injection"
     if "pickle" in cid:
         return "unsafe-deserialization"
+    # child-process rules are command execution, not code eval — check before the eval/exec
+    # keyword test, since "detect-child-process" would otherwise fall through unmapped.
+    if any(k in cid for k in ("subprocess", "shell", "os-system", "command",
+                              "child-process", "child_process", "spawn")):
+        return "command-injection"
     if "eval" in cid or "exec" in cid:
         return "arbitrary-code-execution"
-    if any(k in cid for k in ("subprocess", "shell", "os-system", "command")):
-        return "command-injection"
     if any(k in cid for k in ("secret", "password", "hardcoded", "token")):
         return "hardcoded-secret"
     return None
@@ -352,9 +341,10 @@ def run_security_agent(state: ReviewState) -> dict:
     LangGraph node function. Takes the full state, returns only the fields
     it updates — LangGraph merges this dict back into the state.
 
-    For Python, runs THREE deterministic sources (our AST visitor + Bandit + Semgrep);
-    other languages get Semgrep, which is multi-language. Findings are then deterministically
-    deduped: duplicates collapse into one issue marked as corroborated by the other tools.
+    Every language gets at least TWO independent deterministic sources so agreement means
+    something: Python → our AST visitor + Bandit + Semgrep; JS/TS → our tree-sitter visitor
+    + Semgrep. Findings are then deterministically deduped: duplicates collapse into one
+    issue marked as corroborated by the other tools. No LLM anywhere in this agent.
     """
     is_python = state.language == "python"
 
@@ -373,6 +363,10 @@ def run_security_agent(state: ReviewState) -> dict:
         visitor = SecurityVisitor()
         visitor.visit(tree)
         ast_issues = visitor.issues  # already tagged source='custom-ast' (model default)
+    elif state.language in _JS_LANGUAGES:
+        # Same rules, different parser — an independent source from Semgrep, so the two
+        # can corroborate each other exactly like custom-ast and Bandit do for Python.
+        ast_issues = run_js_security_ast(state.code, state.language)
 
     # Use pre-computed findings from the repo-level batched run when present; a missing
     # key returns None → the runner falls back to spawning on this one string (tests).
