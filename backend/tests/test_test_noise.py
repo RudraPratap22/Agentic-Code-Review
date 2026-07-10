@@ -25,6 +25,23 @@ def test_is_test_file_javascript_conventions():
     assert not is_test_file("src/Button.jsx")       # production JS untouched
 
 
+def test_is_test_file_go_and_java_conventions():
+    assert is_test_file("mux_test.go")             # go: x_test.go
+    assert is_test_file("router/route_test.go")
+    assert is_test_file("src/test/java/AppTest.java")
+    assert is_test_file("com/example/FooTests.java")
+    assert not is_test_file("regexp.go")           # production Go untouched
+    assert not is_test_file("src/main/java/App.java")
+
+
+def test_long_test_functions_are_suppressed():
+    # Table-driven tests are legitimately long; the production limit shouldn't apply.
+    issues = [_issue("mux_test.go", category="function-too-long"),
+              _issue("regexp.go", category="function-too-long")]
+    kept = drop_test_noise(issues)
+    assert [i.filename for i in kept] == ["regexp.go"]
+
+
 def test_drops_noise_rules_only_on_test_files():
     issues = [
         _issue("tests/test_x.py", rule_id="B101"),                     # noise on test → drop

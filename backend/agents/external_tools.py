@@ -25,9 +25,10 @@ from models.state import Issue, Severity
 # never affected; genuine issues on tests (e.g. a real security bug) still surface.
 
 _TEST_FILE_RE = re.compile(
-    r"(^|/)tests?/|(^|/)__tests__/|"          # test/ tests/ __tests__/ directories
-    r"(^|/)test_[^/]*\.py$|_test\.py$|"        # python: test_x.py / x_test.py
-    r"\.(test|spec)\.[jt]sx?$"                 # js/ts: x.test.jsx / x.spec.ts
+    r"(^|/)tests?/|(^|/)__tests__/|(^|/)src/test/|"   # test dirs (incl. maven src/test/)
+    r"(^|/)test_[^/]*\.py$|_test\.(py|go)$|"           # python: test_x.py — go: x_test.go
+    r"\.(test|spec)\.[jt]sx?$|"                        # js/ts: x.test.jsx / x.spec.ts
+    r"(^|/)[^/]*Tests?\.java$"                         # java: FooTest.java / FooTests.java
 )
 
 # Rules/categories that are noise on test files (matched against rule_id OR category):
@@ -36,6 +37,9 @@ _TEST_NOISE = {
     "PLR2004", "ARG001", "ARG002", "ARG005",                 # Ruff: magic value / unused arg
     "missing-docstring", "missing-function-docstring",       # our AST docstring checks
     "missing-module-docstring",
+    # Table-driven tests are legitimately long and arg-heavy (a 300-line Go TestQueries with
+    # a case table is idiomatic), so these production limits don't apply to test files.
+    "function-too-long", "too-many-arguments",
 }
 
 
