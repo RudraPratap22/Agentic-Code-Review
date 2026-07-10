@@ -14,6 +14,8 @@ If the LLM call fails, the deterministic findings are still returned in full.
 """
 
 import os
+import re
+from dataclasses import dataclass
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
@@ -111,17 +113,65 @@ Produce:
     return structured.invoke(prompt)
 
 
-def render_report(all_issues: list[Issue], title: str) -> str:
+@dataclass(frozen=True)
+class ReportParts:
+    """The rendered report plus its narrative as structured fields.
+
+    The API surfaces `executive_summary` / `top_priority_fixes` separately so the frontend
+    can render them as first-class UI instead of parsing them back out of the markdown.
+    Both are None when the LLM tier was unavailable — callers just hide the section.
     """
-    Build the final markdown report from a flat list of issues (from one file OR a whole
-    repo). Facts are rendered by code; only the summary/priorities come from the LLM.
+    markdown: str
+    executive_summary: str | None
+    top_priority_fixes: str | None
+
+
+_LIST_MARKER_RE = re.compile(r"(?:^|(?<=\s))(\d+)\.\s")
+
+
+def _normalize_numbered_list(text: str) -> str:
+    """Put each `N.` item on its own line.
+
+    The LLM tends to return "1. do x 2. do y 3. do z" on a single line, which renders as one
+    run-on paragraph in both markdown and the UI.
+
+    We only split on a number that CONTINUES the sequence (1, then 2, then 3...). Splitting
+    on every `\\d+\\.` would break "...the os.system call on line 3." into a bogus item.
+    """
+    text = text.strip()
+    if "\n" in text:
+        return text                       # the LLM already formatted it
+
+    starts, expected = [], 1
+    for match in _LIST_MARKER_RE.finditer(text):
+        if int(match.group(1)) == expected:
+            starts.append(match.start())
+            expected += 1
+    if len(starts) < 2:
+        return text                       # not actually a numbered list
+
+    items = [text[begin:end].strip()
+             for begin, end in zip(starts, starts[1:] + [len(text)])]
+    preamble = text[:starts[0]].strip()
+    return "\n".join(([preamble] if preamble else []) + items)
+
+
+def build_report(all_issues: list[Issue], title: str) -> ReportParts:
+    """
+    Build the final report from a flat list of issues (from one file OR a whole repo).
+    Facts are rendered by code; only the summary/priorities come from the LLM, and they are
+    returned separately so no consumer has to scrape them out of the markdown.
     """
     verified = [i for i in all_issues if i.tier == "verified"]
     suggested = [i for i in all_issues if i.tier == "suggested"]
 
     # Clean code → simple deterministic report, no LLM call needed.
     if not all_issues:
-        return f"# Code Review Report — {title}\n\nNo issues detected by any agent. ✅"
+        return ReportParts(
+            markdown=f"# Code Review Report — {title}\n\nNo issues detected by any agent. ✅",
+            executive_summary="No issues detected by any agent.",
+            top_priority_fixes=None,
+        )
 
     # Severity counts for context.
     counts: dict[str, int] = {}
@@ -130,18 +180,21 @@ def render_report(all_issues: list[Issue], title: str) -> str:
     count_str = (f"{len(all_issues)} total ({len(verified)} verified, {len(suggested)} suggested) — "
                  + ", ".join(f"{v} {k}" for k, v in counts.items()))
 
-    # LLM narrative — degrade gracefully if it fails.
+    # LLM narrative — degrade gracefully if it fails (the findings still render in full).
     try:
         narrative = _write_narrative(title, _digest(all_issues), count_str)
         exec_summary = narrative.executive_summary
-        top_fixes = f"## Top Priority Fixes\n\n{narrative.top_priority_fixes}"
-    except Exception as e:
-        exec_summary = f"_(Executive summary unavailable — LLM error: {e})_"
-        top_fixes = ""
+        top_fixes = _normalize_numbered_list(narrative.top_priority_fixes)
+    except Exception:
+        exec_summary = None
+        top_fixes = None
 
-    return f"""# Code Review Report — {title}
+    exec_md = exec_summary or "_(Executive summary unavailable — the LLM tier was skipped.)_"
+    top_md = f"## Top Priority Fixes\n\n{top_fixes}" if top_fixes else ""
 
-{exec_summary}
+    markdown = f"""# Code Review Report — {title}
+
+{exec_md}
 
 **Findings:** {count_str}
 
@@ -153,7 +206,14 @@ def render_report(all_issues: list[Issue], title: str) -> str:
 
 {_render_tier(suggested)}
 
-{top_fixes}"""
+{top_md}"""
+    return ReportParts(markdown=markdown, executive_summary=exec_summary,
+                       top_priority_fixes=top_fixes)
+
+
+def render_report(all_issues: list[Issue], title: str) -> str:
+    """Markdown-only view of build_report (CLI + PR-comment paths)."""
+    return build_report(all_issues, title).markdown
 
 
 def run_supervisor_agent(state: ReviewState) -> dict:

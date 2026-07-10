@@ -7,6 +7,7 @@
 import time
 from fastapi.testclient import TestClient
 from models.state import Issue, Severity
+from agents.supervisor_agent import ReportParts
 from api import app
 
 client = TestClient(app)
@@ -42,9 +43,15 @@ def test_review_returns_job_id():
     assert d["status"] == "queued" and isinstance(d["job_id"], str) and d["job_id"]
 
 
+def _fake_report(issues, title):
+    """Stand-in for build_report so tests never hit the LLM."""
+    return ReportParts(markdown="# md", executive_summary="All good.",
+                       top_priority_fixes="1. Fix the SQL injection.")
+
+
 def test_review_repo_completes_with_structured_result(monkeypatch):
     monkeypatch.setattr("api.collect_github_findings", lambda t: ("repo (1 files)", [_fake_issue()]))
-    monkeypatch.setattr("api.render_report", lambda issues, title: "# md")   # avoid real LLM
+    monkeypatch.setattr("api.build_report", _fake_report)          # avoid real LLM
     job_id = client.post("/review", json={"target": "https://github.com/o/r"}).json()["job_id"]
     job = _poll(job_id)
     assert job["status"] == "done"
@@ -53,11 +60,14 @@ def test_review_repo_completes_with_structured_result(monkeypatch):
     assert d["summary"]["total"] == 1 and d["summary"]["verified"] == 1
     assert d["findings"][0]["category"] == "sql-injection"
     assert d["report_markdown"] == "# md"
+    # the narrative is now exposed as structured fields for the frontend
+    assert d["executive_summary"] == "All good."
+    assert d["top_priority_fixes"] == "1. Fix the SQL injection."
 
 
 def test_review_pr_completes_with_structured_result(monkeypatch):
     monkeypatch.setattr("api._collect_pr_findings", lambda t: ("o", "r", 1, [_fake_issue()]))
-    monkeypatch.setattr("api.render_report", lambda issues, title: "# pr md")
+    monkeypatch.setattr("api.build_report", _fake_report)
     job_id = client.post("/review", json={"target": "https://github.com/o/r/pull/1"}).json()["job_id"]
     job = _poll(job_id)
     assert job["status"] == "done"

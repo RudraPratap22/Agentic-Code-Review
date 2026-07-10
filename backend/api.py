@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from models.state import Issue
-from agents.supervisor_agent import render_report
+from agents.supervisor_agent import build_report
 from pipeline import collect_github_findings
 from github_pr import _collect_pr_findings, _post_findings
 import jobs
@@ -43,6 +43,10 @@ class ReviewResult(BaseModel):
     summary: Summary
     findings: list[Issue]           # FastAPI serializes each Issue (a Pydantic model) to JSON
     report_markdown: str
+    # The supervisor's narrative, surfaced as structured fields so the frontend can render
+    # it directly. None when the LLM tier was unavailable — the UI just hides the section.
+    executive_summary: str | None = None
+    top_priority_fixes: str | None = None
 
 
 def _summarize(issues) -> Summary:
@@ -75,11 +79,14 @@ def _do_review(target: str, post_comments: bool) -> dict:
             _post_findings(owner, repo, number, issues)
     else:                                          # a repo URL
         title, issues = collect_github_findings(target)
+    report = build_report(issues, title)           # one LLM call, reused for all fields
     return ReviewResult(
         title=title,
         summary=_summarize(issues),
         findings=issues,
-        report_markdown=render_report(issues, title),
+        report_markdown=report.markdown,
+        executive_summary=report.executive_summary,
+        top_priority_fixes=report.top_priority_fixes,
     ).model_dump(mode="json")
 
 
