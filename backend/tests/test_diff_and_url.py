@@ -20,3 +20,35 @@ def test_parse_pr_url_ok():
 def test_parse_pr_url_rejects_non_pr():
     with pytest.raises(ValueError):
         _parse_pr_url("https://github.com/o/r")
+
+
+# ── Pagination: PRs with >100 changed files must not be silently truncated ──
+
+class _FakeResp:
+    def __init__(self, payload, next_url=None):
+        self._payload = payload
+        self.links = {"next": {"url": next_url}} if next_url else {}
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def test_paginated_follows_link_next(monkeypatch):
+    from github_pr import _paginated
+    pages = {
+        "page1": _FakeResp([{"filename": "a.py"}], next_url="page2"),
+        "page2": _FakeResp([{"filename": "b.py"}], next_url="page3"),
+        "page3": _FakeResp([{"filename": "c.py"}]),          # no next → stop
+    }
+    monkeypatch.setattr("github_pr.requests.get", lambda url, **kw: pages[url])
+    assert [f["filename"] for f in _paginated("page1")] == ["a.py", "b.py", "c.py"]
+
+
+def test_paginated_single_page(monkeypatch):
+    from github_pr import _paginated
+    monkeypatch.setattr("github_pr.requests.get",
+                        lambda url, **kw: _FakeResp([{"filename": "only.py"}]))
+    assert [f["filename"] for f in _paginated("u")] == ["only.py"]
