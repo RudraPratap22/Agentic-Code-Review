@@ -60,18 +60,29 @@ def _added_lines(patch: str) -> set[int]:
     return added
 
 
+def _paginated(url: str):
+    """Yield every item across a paginated GitHub list endpoint.
+
+    GitHub returns at most `per_page` items and points to the next page via a `Link:
+    rel="next"` header. Reading only the first response silently truncated PRs with more
+    than 100 changed files — those files were never reviewed and nothing said so.
+    """
+    while url:
+        resp = requests.get(url, headers=_headers(), timeout=30)
+        resp.raise_for_status()
+        yield from resp.json()
+        url = resp.links.get("next", {}).get("url")
+
+
 def _collect_pr_findings(pr_url: str):
     """Fetch the PR, review changed files, scope findings to changed lines.
     Returns (owner, repo, number, list[Issue]) — the shared producer."""
     owner, repo, number = _parse_pr_url(pr_url)
-    resp = requests.get(
-        f"{_API}/repos/{owner}/{repo}/pulls/{number}/files?per_page=100",
-        headers=_headers(), timeout=30,
-    )
-    resp.raise_for_status()
+    changed_files = _paginated(
+        f"{_API}/repos/{owner}/{repo}/pulls/{number}/files?per_page=100")
 
     all_issues = []
-    for f in resp.json():
+    for f in changed_files:
         name = f["filename"]
         patch = f.get("patch")
         language = detect_language(name)
