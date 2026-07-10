@@ -11,6 +11,7 @@ from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
 from agents.external_tools import llm_invoke, drop_duplicate_suggestions
+from agents.treesitter_js import run_js_doc_ast, SUPPORTED_LANGUAGES as _JS_LANGUAGES
 
 load_dotenv()
 
@@ -173,6 +174,10 @@ def run_documentation_agent(state: ReviewState) -> dict:
         if visitor.total_functions > 0:
             coverage = round(visitor.documented_functions / visitor.total_functions * 100)
             coverage_str = f" Documentation coverage: {coverage}%."
+
+    elif state.language in _JS_LANGUAGES:
+        # JSDoc, scoped to the public API (exports) so React callbacks don't drown the report.
+        ast_issues = run_js_doc_ast(state.code, state.language)
 
     # Comment-quality checks work on any language.
     llm_issues = _run_llm_doc_checks(state.code, state.language)

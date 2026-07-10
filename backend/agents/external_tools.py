@@ -24,7 +24,11 @@ from models.state import Issue, Severity
 # low-value rules WHEN (and only when) the finding is on a test file. Production code is
 # never affected; genuine issues on tests (e.g. a real security bug) still surface.
 
-_TEST_FILE_RE = re.compile(r"(^|/)tests?/|(^|/)test_[^/]*\.py$|_test\.py$")
+_TEST_FILE_RE = re.compile(
+    r"(^|/)tests?/|(^|/)__tests__/|"          # test/ tests/ __tests__/ directories
+    r"(^|/)test_[^/]*\.py$|_test\.py$|"        # python: test_x.py / x_test.py
+    r"\.(test|spec)\.[jt]sx?$"                 # js/ts: x.test.jsx / x.spec.ts
+)
 
 # Rules/categories that are noise on test files (matched against rule_id OR category):
 _TEST_NOISE = {

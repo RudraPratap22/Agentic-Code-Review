@@ -67,3 +67,87 @@ def test_unsupported_language_returns_empty():
 
 def test_unparseable_code_degrades_gracefully():
     assert isinstance(run_js_security_ast("<<<not js>>>", "javascript"), list)
+
+
+# ── Quality checks (function size / arity) ──
+
+from agents.treesitter_js import run_js_quality_ast, run_js_doc_ast
+
+
+def _qcats(code, language="javascript"):
+    return [i.category for i in run_js_quality_ast(code, language)]
+
+
+def test_flags_too_many_arguments():
+    assert "too-many-arguments" in _qcats("function f(a,b,c,d,e,g) { return a; }")
+
+
+def test_allows_five_arguments():
+    assert "too-many-arguments" not in _qcats("function f(a,b,c,d,e) { return a; }")
+
+
+def test_flags_function_too_long():
+    body = "\n".join(f"  const x{i} = {i};" for i in range(60))
+    assert "function-too-long" in _qcats(f"function big() {{\n{body}\n}}")
+
+
+def test_quality_findings_are_verified_quality_agent():
+    issues = run_js_quality_ast("function f(a,b,c,d,e,g) {}", "javascript")
+    assert issues[0].agent == "quality" and issues[0].tier == "verified"
+
+
+# ── Documentation: JSDoc on the public API only ──
+
+def _dnames(code, language="javascript"):
+    return [i.description for i in run_js_doc_ast(code, language)]
+
+
+def test_flags_exported_function_without_jsdoc():
+    assert any("greet" in d for d in _dnames("export function greet(n) { return n; }"))
+
+
+def test_documented_export_is_not_flagged():
+    code = "/** Greets. */\nexport function greet(n) { return n; }"
+    assert _dnames(code) == []
+
+
+def test_internal_helper_is_not_flagged():
+    # Not exported → internal → no JSDoc required (this is the noise guard).
+    assert _dnames("function helper(n) { return n; }") == []
+
+
+def test_commonjs_export_is_flagged():
+    code = "function run(x) { return x; }\nmodule.exports = { run };"
+    assert any("run" in d for d in _dnames(code))
+
+
+def test_arrow_function_callback_is_not_flagged():
+    code = "export const items = [1,2].map((x) => x * 2);"
+    assert _dnames(code) == []
+
+
+def test_constructor_is_not_flagged():
+    code = "export class Svc {\n  constructor(a) { this.a = a; }\n}"
+    assert not any("constructor" in d for d in _dnames(code))
+
+
+def test_doc_findings_are_documentation_agent():
+    issues = run_js_doc_ast("export function greet(n) {}", "javascript")
+    assert issues[0].agent == "documentation" and issues[0].tier == "verified"
+    assert issues[0].category == "missing-function-docstring"
+
+
+def test_nested_long_functions_reported_once():
+    # A long outer function whose nested callback inherits its length must yield ONE finding,
+    # not one per nesting level (JS nests arrow callbacks everywhere).
+    body = "\n".join(f"    const x{i} = {i};" for i in range(60))
+    code = f"export const outer = (req) => {{\n  return new Promise((resolve) => {{\n{body}\n  }});\n}};"
+    longs = [i for i in run_js_quality_ast(code, "javascript") if i.category == "function-too-long"]
+    assert len(longs) == 1                       # only the outermost function is reported
+
+
+def test_arrow_function_name_resolved_from_binding():
+    body = "\n".join(f"  const x{i} = {i};" for i in range(60))
+    code = f"export const uploadFileService = (req) => {{\n{body}\n}};"
+    longs = [i for i in run_js_quality_ast(code, "javascript") if i.category == "function-too-long"]
+    assert "uploadFileService" in longs[0].description   # not '<anonymous>'
