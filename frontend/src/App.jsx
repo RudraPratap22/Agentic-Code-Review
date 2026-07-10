@@ -94,6 +94,25 @@ export default function App() {
         <section className="results">
           <h2>{result.title}</h2>
 
+          {result.executive_summary && (
+            <p className="exec-summary">{result.executive_summary}</p>
+          )}
+
+          {result.top_priority_fixes && (
+            <div className="top-fixes">
+              <h3>🎯 Top priority fixes</h3>
+              <ol>
+                {result.top_priority_fixes
+                  .split("\n")
+                  .map((line) => line.replace(/^\s*\d+\.\s*/, "").trim())
+                  .filter(Boolean)
+                  .map((fix, i) => (
+                    <li key={i}>{fix}</li>
+                  ))}
+              </ol>
+            </div>
+          )}
+
           <div className="summary">
             <span className="chip">Total {result.summary.total}</span>
             <span className="chip verified">✅ Verified {result.summary.verified}</span>
