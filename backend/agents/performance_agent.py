@@ -21,14 +21,29 @@ from agents.external_tools import (tool_bin, run_json_tool, dedupe, llm_invoke,
 load_dotenv()
 
 
-# Functions that typically do I/O (DB queries, HTTP requests, file reads)
-_IO_CALLS = {
-    "execute", "fetchone", "fetchall", "fetchmany",   # DB cursors
-    "query", "filter", "get", "all", "first",         # ORMs (SQLAlchemy, Django)
-    "requests.get", "requests.post", "requests.put",  # HTTP
-    "urlopen",                                          # urllib
-    "read", "write", "readlines",                      # File I/O
-}
+# N+1 detection matches the FULL dotted call path, never a bare method name. Matching bare
+# names flagged every `dict.get()`, `headers.get()` and `os.environ.get()` inside a loop as
+# a database query — `get`, `all`, `first`, `read` and `write` are far too common.
+
+# DB cursor methods — unambiguous once we require a receiver (`cursor.execute`, not `execute`).
+_DB_METHOD_SUFFIXES = (".execute", ".executemany", ".fetchone", ".fetchall", ".fetchmany")
+
+# ORM access paths: Django `Model.objects.get(...)`, SQLAlchemy `session.query(...)`.
+_ORM_PATH_MARKERS = (".objects.", "session.query", ".query.filter", ".query.get",
+                     ".query.all", ".query.first")
+
+# HTTP clients. A receiver is required, so `resp.links.get(...)` can never match.
+_HTTP_CALL_SUFFIXES = ("requests.get", "requests.post", "requests.put", "requests.patch",
+                       "requests.delete", "httpx.get", "httpx.post")
+
+
+def _is_db_call(path: str) -> bool:
+    """True for a database/ORM read, judged from the whole call path."""
+    return path.endswith(_DB_METHOD_SUFFIXES) or any(m in path for m in _ORM_PATH_MARKERS)
+
+
+def _is_http_call(path: str) -> bool:
+    return path == "urlopen" or path.endswith(_HTTP_CALL_SUFFIXES)
 
 # Blocking calls that should never appear inside async def
 _BLOCKING_CALLS = {
@@ -45,8 +60,12 @@ _BLOCKING_CALLS = {
 class PerformanceVisitor(ast.NodeVisitor):
     def __init__(self):
         self.issues: list[Issue] = []
-        self._in_loop = False
+        self._loop_kind: str | None = None       # None | "for" | "while"
         self._in_async = False
+
+    @property
+    def _in_loop(self) -> bool:
+        return self._loop_kind is not None
 
     def _add(self, node, severity, category, description, suggestion):
         self.issues.append(Issue(
@@ -61,12 +80,16 @@ class PerformanceVisitor(ast.NodeVisitor):
     # ── Track context: are we inside a loop? inside async? ─────────────
 
     def visit_For(self, node):
-        old = self._in_loop
-        self._in_loop = True
+        old = self._loop_kind
+        self._loop_kind = "for"
         self.generic_visit(node)
-        self._in_loop = old
+        self._loop_kind = old
 
-    visit_While = visit_For  # same logic for while loops
+    def visit_While(self, node):
+        old = self._loop_kind
+        self._loop_kind = "while"
+        self.generic_visit(node)
+        self._loop_kind = old
 
     def visit_AsyncFunctionDef(self, node):
         old = self._in_async
@@ -77,16 +100,26 @@ class PerformanceVisitor(ast.NodeVisitor):
     # ── Check function calls ──────────────────────────────────────────
 
     def visit_Call(self, node):
-        call_name = self._get_call_name(node)
-        if call_name:
-            # N+1: I/O call inside a loop
-            if self._in_loop and call_name in _IO_CALLS:
+        call_path = self._call_path(node)
+        if call_path and self._in_loop:
+            if _is_db_call(call_path):
                 self._add(
                     node, Severity.HIGH, "n-plus-one",
-                    f"I/O call '{call_name}()' inside a loop — possible N+1 query pattern",
+                    f"Database call '{call_path}()' inside a loop — N+1 query pattern",
                     "Batch the query before the loop, e.g. fetch all records with one WHERE...IN query.",
                 )
+            # An HTTP call in a `for` loop fetches once per item — a real N+1. In a `while`
+            # loop it is almost always pagination or retry, where each request depends on the
+            # previous response and cannot be batched, so we do not flag it.
+            elif self._loop_kind == "for" and _is_http_call(call_path):
+                self._add(
+                    node, Severity.MEDIUM, "n-plus-one",
+                    f"HTTP call '{call_path}()' inside a for-loop — one request per item",
+                    "Fetch in one batched request, or issue the requests concurrently.",
+                )
 
+        call_name = self._get_call_name(node)
+        if call_name:
             # Blocking call inside async
             if self._in_async and call_name in _BLOCKING_CALLS:
                 self._add(
@@ -112,6 +145,18 @@ class PerformanceVisitor(ast.NodeVisitor):
                 "Use list.append() for single items or list.extend() for multiple.",
             )
         self.generic_visit(node)
+
+    @staticmethod
+    def _call_path(node: ast.Call) -> str | None:
+        """The full dotted source of the callee, e.g. 'self.cursor.execute', 'resp.links.get'.
+
+        Unlike _get_call_name this never collapses to a bare method name, so a receiver is
+        always available to disambiguate `dict.get` from `Model.objects.get`.
+        """
+        try:
+            return ast.unparse(node.func)
+        except Exception:
+            return None
 
     @staticmethod
     def _get_call_name(node: ast.Call) -> str | None:
