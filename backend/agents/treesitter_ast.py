@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from models.state import Issue, Severity
-from agents.security_patterns import SECRET_NAME_RE, SQL_INJECTION_RE
+from agents.security_patterns import SECRET_NAME_RE, SQL_INJECTION_RE, looks_like_secret_value
 from agents.thresholds import MAX_FUNCTION_LINES, MAX_FUNCTION_ARGS
 
 
@@ -38,6 +38,11 @@ def _text(src: bytes, node) -> str:
 
 def _line(node) -> int:
     return node.start_point[0] + 1
+
+
+def _literal_value(src: bytes, node) -> str:
+    """The contents of a string literal, without its surrounding quotes/backticks."""
+    return _text(src, node).strip("\"'`")
 
 
 def _walk(node):
@@ -145,7 +150,8 @@ def _security_javascript(src: bytes, root) -> list[Issue]:
             name_node, value = node.child_by_field_name("name"), node.child_by_field_name("value")
             if name_node is not None and value is not None and value.type == "string":
                 var_name = _text(src, name_node)
-                if SECRET_NAME_RE.search(var_name):
+                if (SECRET_NAME_RE.search(var_name)
+                        and looks_like_secret_value(_literal_value(src, value))):
                     issues.append(_issue("hardcoded-secret", Severity.CRITICAL,
                                          f"Hardcoded secret found in variable '{var_name}'",
                                          _line(node), _SECRET_FIX))
@@ -173,19 +179,20 @@ _GO_EXEC_FIELDS = {"Command", "CommandContext"}
 _GO_STRING_LITERALS = {"interpreted_string_literal", "raw_string_literal"}
 
 
-def _go_value_is_string_literal(node) -> bool:
-    """Go wraps a spec's value in an `expression_list`, so look one level in.
+def _go_string_literal(node):
+    """The string-literal node assigned by a const/var spec, else None.
 
-    `const K = "lit"` → literal (flag it); `var K = os.Getenv("K")` → a call, not a literal.
+    Go wraps a spec's value in an `expression_list`, so look one level in.
+    `const K = "lit"` → the literal; `var K = os.Getenv("K")` → a call, so None.
     """
     value = node.child_by_field_name("value")
     if value is None:
-        return False
+        return None
     if value.type in _GO_STRING_LITERALS:
-        return True
+        return value
     if value.type == "expression_list":
-        return any(c.type in _GO_STRING_LITERALS for c in value.named_children)
-    return False
+        return next((c for c in value.named_children if c.type in _GO_STRING_LITERALS), None)
+    return None
 
 
 def _go_sprintf_template(src: bytes, node) -> str | None:
@@ -226,7 +233,8 @@ def _security_go(src: bytes, root) -> list[Issue]:
             name_node = node.child_by_field_name("name")
             if name_node is None or not SECRET_NAME_RE.search(_text(src, name_node)):
                 continue
-            if _go_value_is_string_literal(node):
+            literal = _go_string_literal(node)
+            if literal is not None and looks_like_secret_value(_literal_value(src, literal)):
                 issues.append(_issue("hardcoded-secret", Severity.CRITICAL,
                                      f"Hardcoded secret found in '{_text(src, name_node)}'",
                                      _line(node), _SECRET_FIX))
@@ -287,7 +295,8 @@ def _security_java(src: bytes, root) -> list[Issue]:
             name_node, value = node.child_by_field_name("name"), node.child_by_field_name("value")
             if name_node is not None and value is not None and value.type == "string_literal":
                 var_name = _text(src, name_node)
-                if SECRET_NAME_RE.search(var_name):
+                if (SECRET_NAME_RE.search(var_name)
+                        and looks_like_secret_value(_literal_value(src, value))):
                     issues.append(_issue("hardcoded-secret", Severity.CRITICAL,
                                          f"Hardcoded secret found in variable '{var_name}'",
                                          _line(node), _SECRET_FIX))

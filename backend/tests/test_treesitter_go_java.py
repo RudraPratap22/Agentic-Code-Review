@@ -107,3 +107,26 @@ def test_doc_ast_is_noop_for_go_and_java():
 def test_unsupported_language_returns_empty():
     assert run_security_ast("x = 1", "python") == []
     assert run_quality_ast("x = 1", "ruby") == []
+
+
+# ── Advice/message constants must not be mistaken for secrets (our own bot flagged us) ──
+
+def test_prose_secret_constant_not_flagged_go():
+    code = 'package main\nconst SecretFix = "Load secrets from a vault, never a literal."'
+    assert "hardcoded-secret" not in _scats(code, "go")
+
+
+def test_prose_secret_constant_not_flagged_java():
+    code = 'class S { static final String SECRET_FIX = "Load secrets from a vault."; }'
+    assert "hardcoded-secret" not in _scats(code, "java")
+
+
+def test_prose_secret_constant_not_flagged_js():
+    code = 'const SECRET_FIX = "Load secrets from environment variables or a vault.";'
+    assert "hardcoded-secret" not in _scats(code, "javascript")
+
+
+def test_real_secrets_still_flagged_everywhere():
+    assert "hardcoded-secret" in _scats('package main\nconst APIKey = "sk-live-abc123"', "go")
+    assert "hardcoded-secret" in _scats('class S { static final String API_KEY = "sk-live-abc123"; }', "java")
+    assert "hardcoded-secret" in _scats('const API_KEY = "sk-live-abc123";', "javascript")
