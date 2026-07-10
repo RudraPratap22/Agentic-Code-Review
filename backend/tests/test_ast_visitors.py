@@ -38,3 +38,11 @@ def test_quality_flags_too_many_args_but_not_docstring():
 def test_performance_flags_blocking_in_async():
     code = "import time\nasync def f():\n    time.sleep(1)"
     assert "blocking-in-async" in _cats(PerformanceVisitor, code)
+
+
+def test_python_prose_secret_constant_not_flagged():
+    # `_SECRET_FIX = "Load secrets from ..."` is advice text, not a credential.
+    prose = '_SECRET_FIX = "Load secrets from environment variables or a vault."'
+    assert "hardcoded-secret" not in _cats(SecurityVisitor, prose)
+    real = 'API_KEY = "sk-live-abc123"'
+    assert "hardcoded-secret" in _cats(SecurityVisitor, real)

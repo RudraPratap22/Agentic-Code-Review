@@ -19,9 +19,10 @@ import subprocess
 import os
 from models.state import ReviewState, AgentOutput, Issue, Severity
 from agents.external_tools import dedupe, ext_for_language
-from agents.treesitter_js import run_js_security_ast, SUPPORTED_LANGUAGES as _JS_LANGUAGES
+from agents.treesitter_ast import run_security_ast, SUPPORTED_LANGUAGES as _TREESITTER_LANGUAGES
 # Shared with the JS/TS tree-sitter visitor so both languages detect the same bugs.
-from agents.security_patterns import (SECRET_NAME_RE as _SECRET_PATTERNS,
+from agents.security_patterns import (looks_like_secret_value,
+                                      SECRET_NAME_RE as _SECRET_PATTERNS,
                                       SQL_INJECTION_RE as _SQL_INJECTION_RE)
 
 # Function calls that are inherently dangerous
@@ -69,8 +70,11 @@ class SecurityVisitor(ast.NodeVisitor):
         for target in node.targets:
             if isinstance(target, ast.Name):
                 if _SECRET_PATTERNS.search(target.id):
-                    # Only flag if the value is a string literal, not a variable
-                    if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                    # Only flag a string literal that plausibly IS a secret — a name match
+                    # alone flags advice text like `_SECRET_FIX = "Load secrets from ..."`.
+                    if (isinstance(node.value, ast.Constant)
+                            and isinstance(node.value.value, str)
+                            and looks_like_secret_value(node.value.value)):
                         self._add(
                             node,
                             Severity.CRITICAL,
@@ -363,10 +367,10 @@ def run_security_agent(state: ReviewState) -> dict:
         visitor = SecurityVisitor()
         visitor.visit(tree)
         ast_issues = visitor.issues  # already tagged source='custom-ast' (model default)
-    elif state.language in _JS_LANGUAGES:
+    elif state.language in _TREESITTER_LANGUAGES:
         # Same rules, different parser — an independent source from Semgrep, so the two
         # can corroborate each other exactly like custom-ast and Bandit do for Python.
-        ast_issues = run_js_security_ast(state.code, state.language)
+        ast_issues = run_security_ast(state.code, state.language)
 
     # Use pre-computed findings from the repo-level batched run when present; a missing
     # key returns None → the runner falls back to spawning on this one string (tests).

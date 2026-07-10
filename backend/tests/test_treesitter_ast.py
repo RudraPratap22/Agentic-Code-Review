@@ -1,10 +1,10 @@
 """Tests for the deterministic JS/TS security AST visitor (tree-sitter, no LLM)."""
 
-from agents.treesitter_js import run_js_security_ast
+from agents.treesitter_ast import run_security_ast
 
 
 def _cats(code, language="javascript"):
-    return [i.category for i in run_js_security_ast(code, language)]
+    return [i.category for i in run_security_ast(code, language)]
 
 
 def test_flags_eval():
@@ -56,26 +56,26 @@ def test_typescript_is_parsed():
 
 
 def test_findings_are_verified_tier_from_treesitter():
-    issues = run_js_security_ast("eval(x);", "javascript")
+    issues = run_security_ast("eval(x);", "javascript")
     assert issues[0].tier == "verified"
     assert issues[0].source == "tree-sitter"     # a source distinct from semgrep
 
 
 def test_unsupported_language_returns_empty():
-    assert run_js_security_ast("eval(x);", "python") == []
+    assert run_security_ast("eval(x);", "python") == []
 
 
 def test_unparseable_code_degrades_gracefully():
-    assert isinstance(run_js_security_ast("<<<not js>>>", "javascript"), list)
+    assert isinstance(run_security_ast("<<<not js>>>", "javascript"), list)
 
 
 # ── Quality checks (function size / arity) ──
 
-from agents.treesitter_js import run_js_quality_ast, run_js_doc_ast
+from agents.treesitter_ast import run_quality_ast, run_doc_ast
 
 
 def _qcats(code, language="javascript"):
-    return [i.category for i in run_js_quality_ast(code, language)]
+    return [i.category for i in run_quality_ast(code, language)]
 
 
 def test_flags_too_many_arguments():
@@ -92,14 +92,14 @@ def test_flags_function_too_long():
 
 
 def test_quality_findings_are_verified_quality_agent():
-    issues = run_js_quality_ast("function f(a,b,c,d,e,g) {}", "javascript")
+    issues = run_quality_ast("function f(a,b,c,d,e,g) {}", "javascript")
     assert issues[0].agent == "quality" and issues[0].tier == "verified"
 
 
 # ── Documentation: JSDoc on the public API only ──
 
 def _dnames(code, language="javascript"):
-    return [i.description for i in run_js_doc_ast(code, language)]
+    return [i.description for i in run_doc_ast(code, language)]
 
 
 def test_flags_exported_function_without_jsdoc():
@@ -132,7 +132,7 @@ def test_constructor_is_not_flagged():
 
 
 def test_doc_findings_are_documentation_agent():
-    issues = run_js_doc_ast("export function greet(n) {}", "javascript")
+    issues = run_doc_ast("export function greet(n) {}", "javascript")
     assert issues[0].agent == "documentation" and issues[0].tier == "verified"
     assert issues[0].category == "missing-function-docstring"
 
@@ -142,12 +142,12 @@ def test_nested_long_functions_reported_once():
     # not one per nesting level (JS nests arrow callbacks everywhere).
     body = "\n".join(f"    const x{i} = {i};" for i in range(60))
     code = f"export const outer = (req) => {{\n  return new Promise((resolve) => {{\n{body}\n  }});\n}};"
-    longs = [i for i in run_js_quality_ast(code, "javascript") if i.category == "function-too-long"]
+    longs = [i for i in run_quality_ast(code, "javascript") if i.category == "function-too-long"]
     assert len(longs) == 1                       # only the outermost function is reported
 
 
 def test_arrow_function_name_resolved_from_binding():
     body = "\n".join(f"  const x{i} = {i};" for i in range(60))
     code = f"export const uploadFileService = (req) => {{\n{body}\n}};"
-    longs = [i for i in run_js_quality_ast(code, "javascript") if i.category == "function-too-long"]
+    longs = [i for i in run_quality_ast(code, "javascript") if i.category == "function-too-long"]
     assert "uploadFileService" in longs[0].description   # not '<anonymous>'

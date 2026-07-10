@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
 from agents.external_tools import (tool_bin, run_json_tool, dedupe, llm_invoke,
                                     drop_duplicate_suggestions, ruff_suggestion)
-from agents.treesitter_js import run_js_quality_ast, SUPPORTED_LANGUAGES as _JS_LANGUAGES
+from agents.treesitter_ast import run_quality_ast, SUPPORTED_LANGUAGES as _TREESITTER_LANGUAGES
 
 load_dotenv()
 
@@ -225,10 +225,10 @@ def run_quality_agent(state: ReviewState) -> dict:
         visitor.visit(tree)
         ast_issues = visitor.issues
         ruff_issues = _run_ruff_quality(state.code, (state.tool_findings or {}).get("ruff"))
-    elif state.language in _JS_LANGUAGES:
-        # Same size/arity limits, different parser. Single-source (no Ruff for JS), but
-        # still deterministic — the LLM stays out of the verified tier.
-        ast_issues = run_js_quality_ast(state.code, state.language)
+    elif state.language in _TREESITTER_LANGUAGES:
+        # Same size/arity limits, different parser. Single-source (no Ruff equivalent for
+        # these languages), but still deterministic — the LLM stays out of the verified tier.
+        ast_issues = run_quality_ast(state.code, state.language)
 
     # Verified tier: AST + Ruff, deduped so overlaps become corroboration.
     verified = dedupe(ast_issues + ruff_issues, _quality_canonical)

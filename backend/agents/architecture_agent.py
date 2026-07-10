@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from pydantic import BaseModel, Field
 from models.state import ReviewState, AgentOutput, Issue, Severity
-from agents.external_tools import llm_invoke, drop_duplicate_suggestions
+from agents.external_tools import llm_invoke, drop_duplicate_suggestions, is_test_file
 
 load_dotenv()
 
@@ -44,17 +44,50 @@ def _arch_issue(severity, category, description, suggestion, line=None):
 
 # ── Half 1: structure checks ────────────────────────────────────────────────────
 
-def _exists_any(repo, names):
-    return any(os.path.exists(os.path.join(repo, n)) for n in names)
+# A repo pins dependencies in whatever manifest its ecosystem uses — checking only the
+# Python ones reported a false "missing manifest" on every Go/JS/Java project.
+_DEPENDENCY_MANIFESTS = [
+    "requirements.txt", "pyproject.toml", "setup.py", "Pipfile",   # python
+    "go.mod",                                                       # go
+    "package.json",                                                 # js/ts
+    "pom.xml", "build.gradle", "build.gradle.kts",                  # java
+    "Gemfile", "composer.json", "Cargo.toml",                       # ruby / php / rust
+]
+
+
+def _exists_any(repo, names, depth=1):
+    """True if any of `names` exists at the repo root, or up to `depth` levels below.
+
+    The depth matters for monorepos: a Python manifest may live in backend/, a JS one in
+    frontend/, so a root-only check reports a false 'missing manifest'.
+    """
+    for name in names:
+        if os.path.exists(os.path.join(repo, name)):
+            return True
+    if depth <= 0:
+        return False
+    for entry in os.listdir(repo):
+        sub = os.path.join(repo, entry)
+        if os.path.isdir(sub) and entry not in _SKIP_DIRS and not entry.startswith("."):
+            if _exists_any(sub, names, depth - 1):
+                return True
+    return False
 
 
 def _has_tests(repo):
-    if os.path.isdir(os.path.join(repo, "tests")):
+    """True if the repo has any test file, in any supported language's convention.
+
+    Reuses is_test_file so Go (`x_test.go`), Java (`FooTest.java`, `src/test/`) and JS
+    (`x.test.jsx`, `__tests__/`) count — not just Python's `test_*.py`. A conventional
+    tests/ directory still counts on its own.
+    """
+    if any(os.path.isdir(os.path.join(repo, d)) for d in ("tests", "test")):
         return True
     for dirpath, dirnames, filenames in os.walk(repo):
         dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
         for f in filenames:
-            if f.startswith("test_") and f.endswith(".py") or f.endswith("_test.py"):
+            rel = os.path.relpath(os.path.join(dirpath, f), repo)
+            if is_test_file(rel):
                 return True
     return False
 
@@ -97,10 +130,10 @@ def _structure_checks(repo) -> list[Issue]:
             "No .gitignore found",
             "Add a .gitignore so build artifacts and secrets aren't committed.",
         ))
-    if not _exists_any(repo, ["requirements.txt", "pyproject.toml", "setup.py", "Pipfile"]):
+    if not _exists_any(repo, _DEPENDENCY_MANIFESTS):
         issues.append(_arch_issue(
             Severity.MEDIUM, "missing-dependency-manifest",
-            "No dependency manifest (requirements.txt / pyproject.toml) found",
+            "No dependency manifest (requirements.txt / go.mod / package.json / pom.xml) found",
             "Pin dependencies so the environment is reproducible.",
         ))
     if not _gitignore_covers_env(repo):

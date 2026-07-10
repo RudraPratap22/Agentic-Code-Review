@@ -51,3 +51,24 @@ def test_gitignore_covers_env(tmp_path):
     assert _gitignore_covers_env(str(tmp_path)) is False   # .env present but not ignored
     (tmp_path / ".gitignore").write_text(".env\n")
     assert _gitignore_covers_env(str(tmp_path)) is True
+
+
+def test_has_tests_recognizes_go_java_js(tmp_path):
+    from agents.architecture_agent import _has_tests
+    assert _has_tests(str(tmp_path)) is False
+    (tmp_path / "mux_test.go").write_text("package main")     # go convention
+    assert _has_tests(str(tmp_path)) is True
+
+
+def test_dependency_manifest_detects_go_mod_and_monorepo(tmp_path):
+    from agents.architecture_agent import _exists_any, _DEPENDENCY_MANIFESTS
+    assert _exists_any(str(tmp_path), _DEPENDENCY_MANIFESTS) is False
+    (tmp_path / "go.mod").write_text("module x")               # go manifest at root
+    assert _exists_any(str(tmp_path), _DEPENDENCY_MANIFESTS) is True
+
+
+def test_dependency_manifest_found_one_level_deep(tmp_path):
+    from agents.architecture_agent import _exists_any, _DEPENDENCY_MANIFESTS
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "requirements.txt").write_text("fastapi")   # monorepo layout
+    assert _exists_any(str(tmp_path), _DEPENDENCY_MANIFESTS) is True
